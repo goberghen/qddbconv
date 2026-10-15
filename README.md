@@ -1,6 +1,6 @@
 # Qddbconv Audio Converter 1.1
 
-**Qddbconv** is a standalone, multi-threaded Qt6 audio converter for Linux/KDE inspired by the user experience and encoder preset architecture of **DeaDBeeF**, **deadbeef-qt5**, and **Qmmp**.
+**Qddbconv** is a standalone, multi-threaded Qt6 audio converter for Linux/KDE inspired by the user experience and encoder preset architecture of **DeaDBeeF**, **deadbeef-qt5**, and **Qmmp**. Vibe coded with AI agents.
 
 ## Features
 
