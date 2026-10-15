@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Qddbconv Audio Converter
+GenericName=Audio Converter
+Comment=Standalone Qt6 audio converter inspired by DeaDBeeF
+Exec=qddbconv %F
+Icon=qddbconv
+Terminal=false
+Categories=AudioVideo;Audio;AudioVideoEditing;Qt;KDE;
+MimeType=audio/flac;audio/mpeg;audio/ogg;audio/opus;audio/mp4;audio/x-wav;audio/x-wavpack;audio/x-ape;application/x-cue;

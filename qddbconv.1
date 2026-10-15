@@ -1,0 +1,210 @@
+.TH QDDBCONV 1 "October 2026" "qddbconv 1.1" "User Commands"
+.SH NAME
+qddbconv \- standalone Qt6 audio converter in DeaDBeeF style for KDE Plasma
+.SH SYNOPSIS
+.B qddbconv
+[\fIFILES\fR | \fIDIRECTORIES\fR | \fICUE_SHEETS\fR ...]
+.SH DESCRIPTION
+.B qddbconv
+is a fast, standalone C++17/Qt6 graphical audio converter designed for KDE Plasma.
+It reproduces the two-pane layout, workflow, encoder preset architecture, and
+Title Formatting syntax of DeaDBeeF's converter plugin while operating as a
+completely independent desktop application.
+.PP
+Under the hood,
+.B qddbconv
+uses
+.BR ffmpeg (1)
+and
+.BR ffprobe (1)
+for universal audio decoding, resampling, sample format conversion, channel mixing,
+and metadata/cover-art muxing, combined with native C++17 parsers for multi-track
+.B .cue
+sheets, Standard MIDI
+.RB ( .mid / .midi / .kar / .rmi ),
+and Yamaha SMAF
+.RB ( .mmf )
+mobile ringtones (including hybrid MIDI + 4-bit Yamaha MA ADPCM / PCM voice streams).
+.SH ARGUMENTS
+.TP
+.I FILES
+One or more audio, MIDI, or Yamaha SMAF files to load into the conversion queue on startup.
+.TP
+.I DIRECTORIES
+One or more directories to scan recursively for supported audio files.
+.TP
+.I CUE_SHEETS
+One or more
+.B .cue
+sheet files to parse and split into individual virtual tracks with per-track start/duration offsets and metadata.
+.SH SUPPORTED FORMATS
+.SS Input Formats
+.TP
+.B Lossless & Uncompressed Audio
+FLAC (\fB.flac\fR), Apple Lossless (\fB.m4a\fR, \fB.alac\fR), Monkey's Audio (\fB.ape\fR),
+WavPack (\fB.wv\fR), TTA (\fB.tta\fR), TAK (\fB.tak\fR), Shorten (\fB.shn\fR),
+WAV (\fB.wav\fR), AIFF (\fB.aif\fR, \fB.aiff\fR), AU/SND (\fB.au\fR, \fB.snd\fR),
+Wave64 (\fB.w64\fR), CAF (\fB.caf\fR).
+.TP
+.B Lossy Audio
+MP3 (\fB.mp3\fR), Ogg Vorbis (\fB.ogg\fR, \fB.oga\fR), Opus (\fB.opus\fR),
+AAC / M4A (\fB.aac\fR, \fB.m4a\fR, \fB.mp4\fR), Musepack (\fB.mpc\fR, \fB.mp+\fR, \fB.mpp\fR),
+Windows Media Audio (\fB.wma\fR), AC-3 / E-AC-3 (\fB.ac3\fR, \fB.eac3\fR),
+DTS (\fB.dts\fR), Speex (\fB.spx\fR), AMR (\fB.amr\fR, \fB.3gp\fR).
+.TP
+.B Chiptune, Tracker, MIDI & Mobile Formats
+Yamaha SMAF (\fB.mmf\fR \(em FM/WaveTable MIDI scores, pure PCM/ADPCM streams, and hybrid MIDI + voice sample tracks),
+Standard MIDI (\fB.mid\fR, \fB.midi\fR, \fB.kar\fR, \fB.rmi\fR via \fBtimidity\fR or \fBfluidsynth\fR),
+MOD/XM/IT/S3M (\fB.mod\fR, \fB.xm\fR, \fB.it\fR, \fB.s3m\fR), SID, NSF, SPC, VGM/VGZ.
+.TP
+.B Video Containers (Audio Track Extraction)
+Matroska (\fB.mkv\fR), WebM (\fB.webm\fR), MP4 (\fB.mp4\fR, \fB.m4v\fR),
+AVI (\fB.avi\fR), MOV (\fB.mov\fR), FLV (\fB.flv\fR), MPEG-TS (\fB.ts\fR).
+.SS Output Formats (28 Built-in Presets + User Presets)
+MP3 (LAME CBR 320, VBR V0, VBR V2, FFmpeg libmp3lame), Ogg Vorbis (\fBoggenc\fR / FFmpeg libvorbis),
+Opus (\fBopusenc\fR 128/192 kbps / FFmpeg libopus), FLAC (\fBflac\fR levels 5 and 8 / FFmpeg),
+AAC / M4A (FFmpeg native AAC 192/256 kbps, \fBfaac\fR, \fBfdkaac\fR), Apple Lossless (ALAC \fB.m4a\fR),
+WavPack (\fBwavpack\fR / FFmpeg), Musepack (\fBmpcenc\fR), Monkey's Audio (\fBmac\fR),
+TTA (\fBttaenc\fR), Uncompressed WAV (16-bit PCM, 32-bit float), AIFF (16-bit big-endian),
+AC-3, WMA v2, and Standard MIDI (\fB.mid\fR extracted from Yamaha SMAF \fB.mmf\fR).
+.SH TITLE FORMATTING
+The
+.B Output file name
+field supports DeaDBeeF-compatible Title Formatting placeholders and conditional brackets:
+.TP
+.B %a\fR, \fB%artist%
+Track artist.
+.TP
+.B %t\fR, \fB%title%
+Track title.
+.TP
+.B %b\fR, \fB%album%
+Album title.
+.TP
+.B %B\fR, \fB%band%\fR, \fB%album artist%
+Album artist.
+.TP
+.B %n\fR, \fB%tracknumber%
+Zero-padded 2-digit track number (e.g. \fB01\fR).
+.TP
+.B %N\fR, \fB%totaltracks%
+Total track count.
+.TP
+.B %y\fR, \fB%year%\fR, \fB%date%
+Release year / date.
+.TP
+.B %g\fR, \fB%genre%
+Genre.
+.TP
+.B %c\fR, \fB%comment%
+Comment tag.
+.TP
+.B %f\fR, \fB%filename%
+Original file base name without extension.
+.TP
+.B [ ... ]
+Conditional block: evaluated and included in the output filename only if at least one
+placeholder inside the brackets resolves to a non-empty string (for example,
+\fB[%tracknumber%. ]%title%\fR).
+.SH KEYBOARD SHORTCUTS
+.TP
+.B Ctrl+O
+Add audio files.
+.TP
+.B Ctrl+Shift+O
+Add folder recursively.
+.TP
+.B Ctrl+U
+Add CUE sheet (\fB.cue\fR).
+.TP
+.B Ctrl+E\fR / \fBDouble-click
+Open the Track Metadata & Properties dialog (tags, technical info, cover art preview/override).
+.TP
+.B F2
+Edit cell inline in the track table (Track#, Title, Artist, Album, Year).
+.TP
+.B Delete\fR / \fBBackspace
+Remove selected tracks from the queue.
+.TP
+.B Ctrl+Shift+Delete
+Clear the entire track queue.
+.TP
+.B Ctrl+P
+Open the Encoder Presets manager.
+.TP
+.B Ctrl+M
+Toggle the top menubar on/off (collapses into a Dolphin-style hamburger menu button \fB\(ti\fR on the toolbar).
+.TP
+.B Ctrl+Return\fR / \fBCtrl+Enter
+Start conversion.
+.TP
+.B Escape
+Cancel active conversion.
+.TP
+.B Ctrl+,\fR
+Open Preferences dialog.
+.TP
+.B Ctrl+Q
+Quit application.
+.SH FILES
+.SS Configuration & Preset Files
+.TP
+.I ~/.config/qddbconv/qddbconv.conf
+Main application configuration file in standard INI format (managed via Qt \fBQSettings\fR).
+Stores output directory paths, Title Formatting pattern, active encoder preset, DSP resampling
+and bit-depth settings, worker thread count, overwrite policy, cover art embedding/resizing
+preferences, default CUE sheet fallback encoding, custom temporary directory path, extra FFmpeg
+arguments, toolbar button style, menubar visibility, and window geometry.
+.TP
+.I ~/.config/deadbeef/presets/encoders/*.txt
+User-created and customized encoder preset files in DeaDBeeF's plain-text key-value format.
+This directory is shared directly with DeaDBeeF so presets created or modified in either
+application are immediately available in both. The 28 built-in presets are compiled into the
+\fBqddbconv\fR binary as read-only defaults; editing or copying a built-in preset writes a
+new \fB.txt\fR file into this directory.
+.SS Temporary & Service Files Created at Runtime
+All temporary files are created in \fI/tmp\fR (or in the custom \fBTemporary WAV Directory\fR
+configured under \fBSettings \(-> Preferences...\fR) and are automatically deleted as soon as
+each track finishes processing:
+.TP
+.I /tmp/qddbconv_XXXXXX.wav
+Intermediate decoded PCM WAV file generated by \fBffmpeg\fR (with CUE track slicing, resampling,
+bit-depth conversion, and channel mixing applied) or synthesized from \fB.mid\fR/\fB.mmf\fR inputs.
+Fed to external CLI encoders and deleted immediately after encoding completes.
+.TP
+.I /tmp/qddbconv_smaf_XXXXXX.mid
+Temporary Standard MIDI file extracted from a Yamaha SMAF (\fB.mmf\fR) score track so
+\fBtimidity\fR can render the instrumental backing track before \fBqddbconv\fR mixes in
+embedded \fBMwa\fR/\fBAwa\fR ADPCM/PCM voice samples. Deleted immediately after rendering.
+.TP
+.I /tmp/qddbconv_cover_XXXXXX.jpg
+Temporary JPEG cover art image (extracted from source tags, loaded from album folder files
+such as \fBcover.jpg\fR/\fBfolder.jpg\fR/\fBfront.png\fR, or selected manually, with optional
+downscaling applied) passed to \fBffmpeg\fR when muxing cover art into MP3, FLAC, M4A/MP4, or WMA.
+Deleted immediately after tag muxing.
+.TP
+.I /tmp/qddbconv_meta_XXXXXX.txt
+Temporary \fBffmetadata\fR file containing a base64-encoded RFC\ 7845 \fBMETADATA_BLOCK_PICTURE\fR
+structure used when embedding cover art into Ogg Vorbis (\fB.ogg\fR) and Opus (\fB.opus\fR)
+containers (avoiding OS command-line length limits on large images). Deleted immediately after muxing.
+.TP
+.I <output_file>.tagged.<ext>
+Temporary atomic remux file created alongside the destination file while \fBffmpeg\fR writes
+output metadata tags and cover art. Atomically renamed over \fI<output_file>\fR upon completion
+so interrupted operations never leave corrupted files.
+.SH SEE ALSO
+.BR ffmpeg (1),
+.BR ffprobe (1),
+.BR timidity (1),
+.BR lame (1),
+.BR flac (1),
+.BR opusenc (1),
+.BR oggenc (1)
+.SH AUTHORS
+\fBgoberghen\fR & \fBArena.ai Agent\fR.
+.SH COPYRIGHT
+Copyright \(co 2026 goberghen & Arena.ai Agent.
+.br
+License GPLv2+: GNU GPL version 2 or later <https://www.gnu.org/licenses/old-licenses/gpl-2.0.html>.
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
