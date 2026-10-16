@@ -17,6 +17,7 @@
 #include "smaf2mid.h"
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
@@ -31,6 +32,25 @@
 #include <vector>
 
 namespace {
+
+static QString resolveSynthToolBin(const QString &name)
+{
+    const QString appDir = QCoreApplication::applicationDirPath();
+    if (!appDir.isEmpty()) {
+        const QStringList subDirs = { appDir, appDir + QLatin1String("/tools") };
+        for (const QString &dir : subDirs) {
+#ifdef Q_OS_WIN
+            QString candExe = dir + QLatin1Char('/') + name + QLatin1String(".exe");
+            if (QFileInfo::exists(candExe))
+                return candExe;
+#endif
+            QString cand = dir + QLatin1Char('/') + name;
+            if (QFileInfo::exists(cand))
+                return cand;
+        }
+    }
+    return name;
+}
 
 inline uint32_t readBe32(const uint8_t *p)
 {
@@ -1361,7 +1381,7 @@ bool SmafConverter::decodeMmfToWav(const QString &mmfPath,
             tmpMid.close();
             if (convertMmfToMid(mmfPath, midFile, errorMsg)) {
                 QProcess proc;
-                proc.start(QStringLiteral("timidity"),
+                proc.start(resolveSynthToolBin(QStringLiteral("timidity")),
                            {midFile, QStringLiteral("--preserve-silence"),
                             QStringLiteral("-Ow"), QStringLiteral("-s"), QString::number(outRate),
                             QStringLiteral("-o"), wavPath});
@@ -1697,7 +1717,7 @@ bool SmafConverter::decodeMidToWav(const QString &midPath,
     /* 1. Synthesize MIDI to WAV using TiMidity++ */
     {
         QProcess proc;
-        proc.start(QStringLiteral("timidity"),
+        proc.start(resolveSynthToolBin(QStringLiteral("timidity")),
                    {midPath, QStringLiteral("--preserve-silence"), QStringLiteral("-Ow"),
                     QStringLiteral("-s"), QString::number(sampleRate),
                     QStringLiteral("-o"), wavPath});
@@ -1708,7 +1728,7 @@ bool SmafConverter::decodeMidToWav(const QString &midPath,
     /* 2. Fallback: FluidSynth if installed */
     {
         QProcess proc;
-        proc.start(QStringLiteral("fluidsynth"),
+        proc.start(resolveSynthToolBin(QStringLiteral("fluidsynth")),
                    {QStringLiteral("-ni"), QStringLiteral("-F"), wavPath,
                     QStringLiteral("-r"), QString::number(sampleRate), midPath});
         if (proc.waitForFinished(120000) && proc.exitCode() == 0 && QFileInfo(wavPath).size() > 44)

@@ -57,6 +57,11 @@ public:
                                   bool resizeCoverArt,
                                   int maxCoverSizePx,
                                   QString &errorMsg);
+
+    /* Inspect how a preset will execute on the current system (standalone CLI binary,
+     * FFmpeg library encoder, or FFmpeg built-in encoder, and whether it runs directly
+     * as designed or via automatic fallback). Uses an in-memory cache of FFmpeg encoders. */
+    static QString describePresetExecution(const EncoderPreset &preset);
 };
 
 #endif /* QDDBCONV_CONVERTER_H */

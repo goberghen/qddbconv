@@ -1,6 +1,6 @@
-# Qddbconv Audio Converter 1.1
+# Qddbconv Audio Converter v1.2.0
 
-**Qddbconv** is a standalone, multi-threaded Qt6 audio converter for Linux/KDE inspired by the user experience and encoder preset architecture of **DeaDBeeF**, **deadbeef-qt5**, and **Qmmp**. Vibe coded with AI agents.
+**Qddbconv** is a standalone, multi-threaded Qt6 audio converter for Linux/KDE inspired by the user experience and encoder preset architecture of **DeaDBeeF**, **deadbeef-qt5**, and **Qmmp**.
 
 ## Features
 
@@ -10,7 +10,7 @@
   - Drag & Drop support for audio files, folders, and `.cue` sheets directly from Dolphin.
 - **100% Compatible with DeaDBeeF Encoder Presets:**
   - Ships with **28 built-in presets** covering DeaDBeeF, Qmmp, and FFmpeg encoders (*FLAC*, *MP3 Lame / FFmpeg*, *Opus 96–320 kbps*, *Ogg Vorbis*, *Ogg FLAC*, *AAC*, *ALAC*, *WavPack*, *MusePack*, *TTA*, *AC3*, *AIFF*, *RIFF WAV*, *Standard MIDI (.mid from .mmf)*, *File Copy*).
-  - Reads and saves custom presets in `~/.config/deadbeef/presets/encoders/*.txt`.
+  - Reads and saves custom presets in `$XDG_DATA_HOME/qddbconv/presets/*.txt` (`~/.local/share/qddbconv/presets/*.txt` on Linux; `%LOCALAPPDATA%\qddbconv\presets\*.txt` or `<app_dir>\presets\*.txt` on Windows; customizable in *Settings -> Configure qddbconv...*), using the plain-text key-value format compatible with DeaDBeeF's converter presets.
 - **Broad Format & CUE Sheet Support:**
   - Built-in CUE sheet parser that splits single-file album images (`FLAC`, `APE`, `WV`, `WAV`, `TAK`, `TTA`) into individual tracks with accurate `INDEX 01` timestamps and per-track metadata.
   - Decodes all lossless, lossy, surround, tracker, and chiptune/console formats supported by `ffmpeg` / `ffprobe`.

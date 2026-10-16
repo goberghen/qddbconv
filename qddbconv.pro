@@ -1,6 +1,7 @@
 QT += core gui widgets concurrent
 CONFIG += c++17
 TARGET = qddbconv
+VERSION = 1.2.0
 TEMPLATE = app
 
 INCLUDEPATH += src
@@ -19,3 +20,5 @@ SOURCES += \
     src/smaf2mid.cpp \
     src/converter.cpp \
     src/mainwindow.cpp
+
+win32: RC_FILE = qddbconv.rc

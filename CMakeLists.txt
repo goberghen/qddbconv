@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(qddbconv VERSION 1.1.0 LANGUAGES CXX)
+project(qddbconv VERSION 1.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,7 +8,7 @@ set(CMAKE_AUTOMOC ON)
 include(GNUInstallDirs)
 find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent)
 
-add_executable(qddbconv
+add_executable(qddbconv WIN32
     src/main.cpp
     src/preset.h
     src/preset.cpp
@@ -20,6 +20,7 @@ add_executable(qddbconv
     src/converter.cpp
     src/mainwindow.h
     src/mainwindow.cpp
+    $<$<PLATFORM_ID:Windows>:qddbconv.rc>
 )
 
 target_include_directories(qddbconv PRIVATE src)
@@ -29,7 +30,7 @@ install(TARGETS qddbconv DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES qddbconv.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 install(FILES qddbconv.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 install(FILES qddbconv.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
-install(FILES README.md INSTALL.md LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(FILES README.md INSTALL.md CHANGELOG.md LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
 # CPack configuration for generating .deb packages via `cpack -G DEB`
 set(CPACK_GENERATOR "DEB")

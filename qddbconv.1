@@ -1,4 +1,4 @@
-.TH QDDBCONV 1 "October 2026" "qddbconv 1.1" "User Commands"
+.TH QDDBCONV 1 "October 2026" "qddbconv v1.2.0" "User Commands"
 .SH NAME
 qddbconv \- standalone Qt6 audio converter in DeaDBeeF style for KDE Plasma
 .SH SYNOPSIS
@@ -67,6 +67,30 @@ AAC / M4A (FFmpeg native AAC 192/256 kbps, \fBfaac\fR, \fBfdkaac\fR), Apple Loss
 WavPack (\fBwavpack\fR / FFmpeg), Musepack (\fBmpcenc\fR), Monkey's Audio (\fBmac\fR),
 TTA (\fBttaenc\fR), Uncompressed WAV (16-bit PCM, 32-bit float), AIFF (16-bit big-endian),
 AC-3, WMA v2, and Standard MIDI (\fB.mid\fR extracted from Yamaha SMAF \fB.mmf\fR).
+.SH AUTOMATIC ENCODER & DECODER FALLBACK
+Different operating systems and FFmpeg builds ship with different sets of external CLI tools and
+compile-time library wrappers.
+.B qddbconv
+automatically inspects and adapts to the available tools at runtime:
+.TP
+.B Encoder Fallback Chain (CLI binary \(-> FFmpeg library encoder \(-> FFmpeg built-in encoder)
+When a preset specifies a standalone CLI encoder binary (\fBlame\fR, \fBoggenc\fR, \fBopusenc\fR,
+\fBflac\fR, \fBwavpack\fR, \fBfaac\fR, \fBfdkaac\fR, \fBneroaacenc\fR, \fBttaenc\fR, \fBtwolame\fR,
+\fBaften\fR) that is not installed in \fBPATH\fR, \fBqddbconv\fR automatically falls back to
+\fBffmpeg\fR with equivalent bitrate/quality parameters. First it prefers an external FFmpeg library
+encoder (\fBlibmp3lame\fR, \fBlibvorbis\fR, \fBlibopus\fR, \fBlibfdk_aac\fR, \fBlibtwolame\fR,
+\fBlibwavpack\fR); if the active \fBffmpeg\fR build lacks that library, it falls back to FFmpeg's
+built-in native encoder (\fBaac\fR, \fBopus\fR, \fBvorbis\fR, \fBflac\fR, \fBwavpack\fR, \fBtta\fR,
+\fBmp2\fR, \fBac3\fR). Hovering over any preset in the \fBEncoder:\fR dropdown displays how that
+preset will execute on the current system (direct CLI binary, FFmpeg library encoder, FFmpeg built-in
+encoder, or fallback).
+.TP
+.B Demoscene & Chiptune Decoder Fallback
+When the active \fBffmpeg\fR binary was compiled without \fB\-\-enable\-libopenmpt\fR or
+\fB\-\-enable\-libgme\fR, \fBqddbconv\fR automatically falls back to \fBopenmpt123\fR/\fBxmp\fR for
+tracker modules (\fB.mod\fR, \fB.xm\fR, \fB.it\fR, \fB.s3m\fR, \fB.mptm\fR, etc.) and to
+\fBgme2wav\fR for console chiptunes (\fB.spc\fR, \fB.vgm\fR, \fB.vgz\fR, \fB.nsf\fR, \fB.gbs\fR,
+\fB.hes\fR, \fB.ay\fR, \fB.sap\fR, \fB.kss\fR).
 .SH TITLE FORMATTING
 The
 .B Output file name
@@ -156,12 +180,14 @@ and bit-depth settings, worker thread count, overwrite policy, cover art embeddi
 preferences, default CUE sheet fallback encoding, custom temporary directory path, extra FFmpeg
 arguments, toolbar button style, menubar visibility, and window geometry.
 .TP
-.I ~/.config/deadbeef/presets/encoders/*.txt
-User-created and customized encoder preset files in DeaDBeeF's plain-text key-value format.
-This directory is shared directly with DeaDBeeF so presets created or modified in either
-application are immediately available in both. The 28 built-in presets are compiled into the
-\fBqddbconv\fR binary as read-only defaults; editing or copying a built-in preset writes a
-new \fB.txt\fR file into this directory.
+.I $XDG_DATA_HOME/qddbconv/presets/*.txt\fR (\fI~/.local/share/qddbconv/presets/*.txt\fR)
+User-created and customized encoder preset files stored in plain-text key-value format
+(100% compatible with DeaDBeeF's converter preset files in \fI~/.config/deadbeef/presets/encoders/*.txt\fR).
+On Windows, the default directory is \fI%LOCALAPPDATA%\\qddbconv\\presets\fR (or a portable
+\fIpresets\fR subfolder inside the \fBqddbconv\fR application folder). A custom preset directory
+can also be configured in \fBSettings \(-> Configure qddbconv...\fR.
+The 28 built-in presets are compiled into the \fBqddbconv\fR binary as read-only defaults;
+editing or copying a built-in preset writes a new \fB.txt\fR file into the user presets directory.
 .SS Temporary & Service Files Created at Runtime
 All temporary files are created in \fI/tmp\fR (or in the custom \fBTemporary WAV Directory\fR
 configured under \fBSettings \(-> Preferences...\fR) and are automatically deleted as soon as

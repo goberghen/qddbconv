@@ -45,6 +45,7 @@ class PresetManager {
 public:
     static QList<EncoderPreset> loadAllPresets();
     static QList<EncoderPreset> builtinPresets();
+    static QString defaultUserPresetDir();
     static QString userPresetDir();
 };
 

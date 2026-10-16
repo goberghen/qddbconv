@@ -61,6 +61,7 @@ private slots:
     void onAbout();
     void onToggleMenuBar(bool visible);
     void onChangeToolButtonStyle(Qt::ToolButtonStyle style);
+    void onChangeUiTheme(const QString &themeId);
     void updateOutputPreview();
 
     void onStartConversion();
@@ -72,6 +73,8 @@ private:
     void setupUi();
     void loadSettings();
     void saveSettings();
+    void applyUiTheme(const QString &themeId);
+    void refreshActionIcons();
     void populatePresetCombo();
     void updateControlTooltips();
     void refreshTableRow(int row);
@@ -101,6 +104,13 @@ private:
     QActionGroup *m_toolbarStyleGroup = nullptr;
     Qt::ToolButtonStyle m_toolbarStyle = Qt::ToolButtonTextBesideIcon;
 
+    QActionGroup *m_themeGroup = nullptr;
+#ifdef Q_OS_WIN
+    QString m_uiTheme = QStringLiteral("breeze-light");
+#else
+    QString m_uiTheme = QStringLiteral("system");
+#endif
+
     QList<QToolButton *> m_toolbarButtons;
     QMenu *m_hamburgerMenu = nullptr;
     QToolButton *m_hamburgerBtn = nullptr;
@@ -112,17 +122,18 @@ private:
     QCheckBox *m_preserveStructureCheck = nullptr;
     QLineEdit *m_outFilePatternEdit = nullptr;
     QComboBox *m_encoderCombo = nullptr;
-    QPushButton *m_presetsBtn = nullptr;
     QComboBox *m_sampleFormatCombo = nullptr;
     QComboBox *m_sampleRateCombo = nullptr;
     QComboBox *m_channelsCombo = nullptr;
     QCheckBox *m_embedCoverCheck = nullptr;
-    QCheckBox *m_resizeCoverCheck = nullptr;
-    QSpinBox *m_maxCoverSpin = nullptr;
     QCheckBox *m_bypassSameFormatCheck = nullptr;
-    QCheckBox *m_retagAfterCopyCheck = nullptr;
     QComboBox *m_overwriteCombo = nullptr;
     QSpinBox *m_threadsSpin = nullptr;
+
+    /* Options configured in Settings -> Configure qddbconv... */
+    bool m_resizeCoverArt = false;
+    int m_maxCoverSizePx = 1000;
+    bool m_retagAfterCopy = false;
 
     /* Right panel controls (Track list + Live Output Path Preview) */
     QTableWidget *m_table = nullptr;

@@ -36,7 +36,10 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QPainter>
+#include <QPainterPath>
 #include <QProgressBar>
+#include <QProxyStyle>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
@@ -44,6 +47,8 @@
 #include <QSplitter>
 #include <QStandardPaths>
 #include <QStyle>
+#include <QStyleFactory>
+#include <QStyleOption>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QThread>
@@ -52,10 +57,163 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+/* Proxy style that ensures top-bar QToolButtons render with the exact same native
+ * pushbutton frame (PE_PanelButtonCommand), height, and padding as standard QPushButtons
+ * across Windows Native (windowsvista), Fusion (Breeze Light/Dark), and KDE Breeze. */
+class CleanUiProxyStyle : public QProxyStyle {
+public:
+    explicit CleanUiProxyStyle(QStyle *baseStyle) : QProxyStyle(baseStyle) {}
+
+    void drawPrimitive(PrimitiveElement element, const QStyleOption *option,
+                       QPainter *painter, const QWidget *widget) const override
+    {
+        if (element == PE_PanelButtonTool && widget && widget->property("qddbToolbarBtn").toBool()) {
+            QProxyStyle::drawPrimitive(PE_PanelButtonCommand, option, painter, widget);
+            return;
+        }
+        QProxyStyle::drawPrimitive(element, option, painter, widget);
+    }
+
+    QSize sizeFromContents(ContentsType type, const QStyleOption *option,
+                           const QSize &contentsSize, const QWidget *widget) const override
+    {
+        QSize sz = QProxyStyle::sizeFromContents(type, option, contentsSize, widget);
+        if (type == CT_ToolButton && widget && widget->property("qddbToolbarBtn").toBool()) {
+            sz.setWidth(sz.width() + 14);
+            sz.setHeight(qMax(sz.height() + 4, 28));
+        } else if (type == CT_PushButton) {
+            sz.setHeight(qMax(sz.height(), 28));
+        } else if (type == CT_ComboBox || type == CT_LineEdit || type == CT_SpinBox) {
+            sz.setHeight(qMax(sz.height(), 26));
+        }
+        return sz;
+    }
+};
+
+/* Render crisp KDE Breeze-style 16x16 / 24x24 / 32x32 vector icons via QPainter
+ * when running on platforms without a system XDG icon theme (e.g. Windows / Wine). */
+static QIcon makeBreezeFallbackIcon(const QString &themeName, const QColor &fgColor)
+{
+    QIcon sysIcon = QIcon::fromTheme(themeName);
+    if (!sysIcon.isNull())
+        return sysIcon;
+
+    const QColor blue(0x3d, 0xae, 0xe9);
+    const QColor green(0x27, 0xae, 0x60);
+    const QColor red(0xda, 0x44, 0x53);
+
+    QIcon icon;
+    for (int sz : {16, 24, 32}) {
+        QPixmap pm(sz, sz);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const qreal s = sz / 16.0;
+        p.scale(s, s);
+
+        if (themeName == QLatin1String("document-open")) {
+            p.setPen(QPen(fgColor, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            QPainterPath doc;
+            doc.moveTo(3, 2); doc.lineTo(9.5, 2); doc.lineTo(13, 5.5);
+            doc.lineTo(13, 14); doc.lineTo(3, 14); doc.closeSubpath();
+            p.drawPath(doc);
+            p.drawLine(QPointF(9.2, 2), QPointF(9.2, 5.5));
+            p.drawLine(QPointF(9.2, 5.5), QPointF(13, 5.5));
+            p.setPen(QPen(green, 1.6, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(8, 7.2), QPointF(8, 11.8));
+            p.drawLine(QPointF(5.7, 9.5), QPointF(10.3, 9.5));
+        } else if (themeName == QLatin1String("folder-open") || themeName == QLatin1String("folder")) {
+            QPainterPath fld;
+            fld.moveTo(1.5, 3.5); fld.lineTo(6.0, 3.5); fld.lineTo(7.5, 5.2);
+            fld.lineTo(14.5, 5.2); fld.lineTo(14.5, 13.0); fld.lineTo(1.5, 13.0);
+            fld.closeSubpath();
+            p.setBrush(QColor(0x3d, 0xae, 0xe9, 65));
+            p.setPen(QPen(fgColor, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawPath(fld);
+            p.drawLine(QPointF(1.5, 6.5), QPointF(14.5, 6.5));
+        } else if (themeName == QLatin1String("media-optical-audio")) {
+            p.setPen(QPen(fgColor, 1.3));
+            p.setBrush(QColor(0x3d, 0xae, 0xe9, 35));
+            p.drawEllipse(QPointF(8, 8), 6.0, 6.0);
+            p.setPen(QPen(blue, 1.4));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(QPointF(8, 8), 1.9, 1.9);
+        } else if (themeName == QLatin1String("media-playback-start")) {
+            QPainterPath tri;
+            tri.moveTo(4.0, 2.5); tri.lineTo(13.5, 8.0); tri.lineTo(4.0, 13.5);
+            tri.closeSubpath();
+            p.setPen(QPen(green, 1.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.setBrush(green);
+            p.drawPath(tri);
+        } else if (themeName == QLatin1String("process-stop") || themeName == QLatin1String("application-exit")) {
+            p.setPen(QPen(red, 1.4));
+            p.setBrush(QColor(0xda, 0x44, 0x53, 35));
+            p.drawEllipse(QPointF(8, 8), 6.0, 6.0);
+            p.setPen(QPen(red, 1.6, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(5.5, 5.5), QPointF(10.5, 10.5));
+            p.drawLine(QPointF(10.5, 5.5), QPointF(5.5, 10.5));
+        } else if (themeName == QLatin1String("document-properties")) {
+            p.setPen(QPen(fgColor, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawRoundedRect(QRectF(2.5, 2.0, 11.0, 12.0), 1.5, 1.5);
+            p.setPen(QPen(blue, 1.5, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(5.0, 5.5), QPointF(11.0, 5.5));
+            p.drawLine(QPointF(5.0, 8.0), QPointF(11.0, 8.0));
+            p.drawLine(QPointF(5.0, 10.5), QPointF(9.0, 10.5));
+        } else if (themeName == QLatin1String("view-refresh")) {
+            p.setPen(QPen(fgColor, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawArc(QRectF(2.5, 2.5, 11.0, 11.0), 45 * 16, 285 * 16);
+            p.drawLine(QPointF(12.2, 2.6), QPointF(12.8, 5.6));
+            p.drawLine(QPointF(9.8, 5.2), QPointF(12.8, 5.6));
+        } else if (themeName == QLatin1String("edit-select-all")) {
+            p.setPen(QPen(fgColor, 1.2, Qt::DashLine));
+            p.drawRect(QRectF(2.5, 2.5, 11.0, 11.0));
+            p.setPen(QPen(blue, 1.2));
+            p.setBrush(QColor(0x3d, 0xae, 0xe9, 100));
+            p.drawRect(QRectF(5.0, 5.0, 6.0, 6.0));
+        } else if (themeName == QLatin1String("list-remove")) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(red);
+            p.drawRoundedRect(QRectF(3.0, 6.8, 10.0, 2.4), 1.0, 1.0);
+        } else if (themeName == QLatin1String("edit-clear-list")) {
+            p.setPen(QPen(fgColor, 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawLine(QPointF(3.0, 4.2), QPointF(13.0, 4.2));
+            p.drawLine(QPointF(6.0, 2.5), QPointF(10.0, 2.5));
+            p.drawRoundedRect(QRectF(4.3, 4.2, 7.4, 9.3), 1.0, 1.0);
+            p.setPen(QPen(red, 1.3, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(6.8, 6.5), QPointF(6.8, 11.2));
+            p.drawLine(QPointF(9.2, 6.5), QPointF(9.2, 11.2));
+        } else if (themeName == QLatin1String("application-menu") || themeName == QLatin1String("show-menu")) {
+            p.setPen(QPen(fgColor, 1.7, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(2.5, 4.0), QPointF(13.5, 4.0));
+            p.drawLine(QPointF(2.5, 8.0), QPointF(13.5, 8.0));
+            p.drawLine(QPointF(2.5, 12.0), QPointF(13.5, 12.0));
+        } else if (themeName == QLatin1String("configure") || themeName == QLatin1String("preferences-system")) {
+            p.setPen(QPen(fgColor, 1.3, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(2.0, 4.5), QPointF(14.0, 4.5));
+            p.drawLine(QPointF(2.0, 8.0), QPointF(14.0, 8.0));
+            p.drawLine(QPointF(2.0, 11.5), QPointF(14.0, 11.5));
+            p.setBrush(blue);
+            p.setPen(QPen(fgColor, 1.1));
+            p.drawEllipse(QPointF(5.5, 4.5), 1.8, 1.8);
+            p.drawEllipse(QPointF(10.5, 8.0), 1.8, 1.8);
+            p.drawEllipse(QPointF(6.5, 11.5), 1.8, 1.8);
+        } else {
+            p.setPen(QPen(blue, 1.4));
+            p.drawEllipse(QPointF(8, 8), 6.0, 6.0);
+            p.setPen(QPen(fgColor, 1.6, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(8.0, 7.2), QPointF(8.0, 11.2));
+            p.drawPoint(QPointF(8.0, 5.0));
+        }
+        p.end();
+        icon.addPixmap(pm);
+    }
+    return icon;
+}
+
 MainWindow::MainWindow(const QStringList &initialPaths, QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("Qddbconv audio converter %1").arg(QCoreApplication::applicationVersion()));
+    setWindowTitle(QStringLiteral("Qddbconv audio converter v%1").arg(QCoreApplication::applicationVersion()));
     resize(1180, 680);
     setAcceptDrops(true);
 
@@ -192,14 +350,37 @@ void MainWindow::setupActionsAndMenus()
     QAction *actTextBeside = addToolbarStyleAct(tr("Text Alongside Icons"), Qt::ToolButtonTextBesideIcon);
     QAction *actTextUnder = addToolbarStyleAct(tr("Text Under Icons"), Qt::ToolButtonTextUnderIcon);
 
+    m_themeGroup = new QActionGroup(this);
+    m_themeGroup->setExclusive(true);
+
+    auto addThemeAct = [this](const QString &title, const QString &themeId) {
+        QAction *a = new QAction(title, this);
+        a->setCheckable(true);
+        a->setData(themeId);
+        if (themeId == m_uiTheme)
+            a->setChecked(true);
+        m_themeGroup->addAction(a);
+        connect(a, &QAction::triggered, this, [this, themeId]() {
+            onChangeUiTheme(themeId);
+        });
+        return a;
+    };
+
+    QAction *actThemeBreezeLight = addThemeAct(tr("Breeze Light"), QStringLiteral("breeze-light"));
+    QAction *actThemeBreezeDark = addThemeAct(tr("Breeze Dark"), QStringLiteral("breeze-dark"));
+#ifdef Q_OS_WIN
+    QAction *actThemeWinNative = addThemeAct(tr("Windows Classic / Native"), QStringLiteral("windowsvista"));
+#endif
+    QAction *actThemeSystem = addThemeAct(tr("System Default"), QStringLiteral("system"));
+
     /* Settings actions */
-    m_actPresets = new QAction(QIcon::fromTheme(QStringLiteral("configure")),
+    m_actPresets = new QAction(QIcon::fromTheme(QStringLiteral("configure"), st->standardIcon(QStyle::SP_FileDialogContentsView)),
                                tr("Encoder Presets..."), this);
     m_actPresets->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_P));
     m_actPresets->setToolTip(tr("Open Encoder Presets manager (Ctrl+P)"));
     connect(m_actPresets, &QAction::triggered, this, &MainWindow::onManagePresets);
 
-    m_actPreferences = new QAction(QIcon::fromTheme(QStringLiteral("preferences-system")),
+    m_actPreferences = new QAction(QIcon::fromTheme(QStringLiteral("preferences-system"), st->standardIcon(QStyle::SP_ComputerIcon)),
                                    tr("Configure qddbconv..."), this);
     m_actPreferences->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Comma));
     m_actPreferences->setToolTip(tr("Configure external tool paths and general preferences (Ctrl+Shift+,)"));
@@ -250,12 +431,17 @@ void MainWindow::setupActionsAndMenus()
     toolbarTextMenu->addAction(actTextBeside);
     toolbarTextMenu->addAction(actTextUnder);
 
+    QMenu *themeMenu = viewMenu->addMenu(tr("UI Theme"));
+    themeMenu->addAction(actThemeBreezeLight);
+    themeMenu->addAction(actThemeBreezeDark);
+#ifdef Q_OS_WIN
+    themeMenu->addAction(actThemeWinNative);
+#endif
+    themeMenu->addAction(actThemeSystem);
+
     QMenu *settingsMenu = mb->addMenu(tr("&Settings"));
     settingsMenu->addAction(m_actPresets);
     settingsMenu->addAction(m_actPreferences);
-    settingsMenu->addSeparator();
-    settingsMenu->addMenu(toolbarTextMenu);
-    settingsMenu->addAction(m_actShowMenuBar);
 
     QMenu *helpMenu = mb->addMenu(tr("&Help"));
     helpMenu->addAction(m_actAbout);
@@ -284,11 +470,15 @@ void MainWindow::setupUi()
 
     /* Top toolbar using QToolButtons so KDE HIG Toolbar Text Position modes work seamlessly */
     QHBoxLayout *topBar = new QHBoxLayout();
+    topBar->setSpacing(6);
     auto makeToolBtn = [this](QAction *act) {
         QToolButton *btn = new QToolButton(this);
+        btn->setProperty("qddbToolbarBtn", true);
         btn->setDefaultAction(act);
+        btn->setIconSize(QSize(16, 16));
         btn->setToolButtonStyle(m_toolbarStyle);
         btn->setAutoRaise(false);
+        btn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         m_toolbarButtons.append(btn);
         return btn;
     };
@@ -302,11 +492,14 @@ void MainWindow::setupUi()
 
     /* Dolphin-style Hamburger menu button (shown when Menubar is hidden via Ctrl+M) */
     m_hamburgerBtn = new QToolButton(this);
-    m_hamburgerBtn->setIcon(QIcon::fromTheme(QStringLiteral("application-menu")));
+    m_hamburgerBtn->setProperty("qddbToolbarBtn", true);
+    m_hamburgerBtn->setIconSize(QSize(16, 16));
+    m_hamburgerBtn->setIcon(makeBreezeFallbackIcon(QStringLiteral("application-menu"), palette().color(QPalette::ButtonText)));
     m_hamburgerBtn->setText(tr("Menu"));
     m_hamburgerBtn->setToolButtonStyle(m_toolbarStyle);
     m_hamburgerBtn->setPopupMode(QToolButton::InstantPopup);
     m_hamburgerBtn->setMenu(m_hamburgerMenu);
+    m_hamburgerBtn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     m_hamburgerBtn->setToolTip(tr("Open Application Menu (press Ctrl+M to restore Menubar)"));
     m_hamburgerBtn->setVisible(false);
     m_toolbarButtons.append(m_hamburgerBtn);
@@ -402,17 +595,20 @@ void MainWindow::setupUi()
     /* 2. Encoder & DSP Settings Group */
     QGroupBox *encGroup = new QGroupBox(tr("Encoder && DSP"), leftPane);
     QFormLayout *encForm = new QFormLayout(encGroup);
+    encForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
-    QHBoxLayout *presetRow = new QHBoxLayout();
     m_encoderCombo = new QComboBox(encGroup);
     m_encoderCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_presetsBtn = new QPushButton(tr("Presets..."), encGroup);
-    m_presetsBtn->setToolTip(tr("Add, edit, copy, or remove encoder presets (Ctrl+P)"));
-    presetRow->addWidget(m_encoderCombo, 1);
-    presetRow->addWidget(m_presetsBtn);
-    encForm->addRow(tr("Encoder:"), presetRow);
+    QLabel *encLabel = new QLabel(tr("Encoder:"), encGroup);
+    encLabel->setToolTip(
+        tr("Output audio format and encoder preset (Ctrl+P in Settings -> Encoder Presets... to manage).\n"
+           "Automatic fallback chain when a preset's primary binary or library is missing:\n"
+           "CLI binary -> FFmpeg library encoder -> FFmpeg built-in encoder\n"
+           "(hover over the selected preset or dropdown items to see how each preset will run)."));
+    encForm->addRow(encLabel, m_encoderCombo);
 
     m_sampleFormatCombo = new QComboBox(encGroup);
+    m_sampleFormatCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_sampleFormatCombo->addItem(tr("Keep source format"), 0);
     m_sampleFormatCombo->addItem(tr("8-bit unsigned int"), 8);
     m_sampleFormatCombo->addItem(tr("16-bit signed int"), 16);
@@ -423,6 +619,7 @@ void MainWindow::setupUi()
     encForm->addRow(tr("Output sample format:"), m_sampleFormatCombo);
 
     m_sampleRateCombo = new QComboBox(encGroup);
+    m_sampleRateCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_sampleRateCombo->setEditable(true);
     m_sampleRateCombo->setInsertPolicy(QComboBox::NoInsert);
     m_sampleRateCombo->addItem(tr("Keep source sample rate"), 0);
@@ -437,6 +634,7 @@ void MainWindow::setupUi()
     encForm->addRow(tr("Resample (DSP):"), m_sampleRateCombo);
 
     m_channelsCombo = new QComboBox(encGroup);
+    m_channelsCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_channelsCombo->addItem(tr("Keep source channels"), 0);
     m_channelsCombo->addItem(tr("Stereo (2.0)"), 2);
     m_channelsCombo->addItem(tr("Mono (1.0)"), 1);
@@ -445,42 +643,27 @@ void MainWindow::setupUi()
 
     leftLayout->addWidget(encGroup);
 
-    /* 3. File Handling, Cover Art & Threading Group */
-    QGroupBox *optGroup = new QGroupBox(tr("Options && Cover Art"), leftPane);
+    /* 3. More Options Group */
+    QGroupBox *optGroup = new QGroupBox(tr("More Options"), leftPane);
     QVBoxLayout *optLayout = new QVBoxLayout(optGroup);
 
     m_embedCoverCheck = new QCheckBox(tr("Embed cover art (from source tags or album folder)"), optGroup);
     m_embedCoverCheck->setChecked(true);
     m_embedCoverCheck->setToolTip(
-        tr("Automatically embed cover art from source file tags or cover.jpg/folder.jpg/front.png in the track directory"));
+        tr("Automatically embed cover art from source file tags or cover.jpg/folder.jpg/front.png in the track directory\n"
+           "(cover art downscaling can be configured in Settings -> Configure qddbconv...)"));
     optLayout->addWidget(m_embedCoverCheck);
-
-    QHBoxLayout *resizeCoverRow = new QHBoxLayout();
-    m_resizeCoverCheck = new QCheckBox(tr("Resize cover if larger than:"), optGroup);
-    m_resizeCoverCheck->setToolTip(tr("Downscale large high-resolution cover scans before embedding"));
-    m_maxCoverSpin = new QSpinBox(optGroup);
-    m_maxCoverSpin->setRange(100, 4096);
-    m_maxCoverSpin->setSingleStep(100);
-    m_maxCoverSpin->setValue(1000);
-    m_maxCoverSpin->setSuffix(tr(" px"));
-    m_maxCoverSpin->setToolTip(tr("Maximum width or height in pixels for embedded cover art"));
-    resizeCoverRow->addWidget(m_resizeCoverCheck);
-    resizeCoverRow->addWidget(m_maxCoverSpin);
-    resizeCoverRow->addStretch();
-    optLayout->addLayout(resizeCoverRow);
 
     m_bypassSameFormatCheck = new QCheckBox(tr("Copy file without conversion if format is not changing"), optGroup);
     m_bypassSameFormatCheck->setToolTip(
-        tr("Copy file without conversion if the source extension matches the target preset extension"));
-
-    m_retagAfterCopyCheck = new QCheckBox(tr("Re-tag after copy"), optGroup);
-    m_retagAfterCopyCheck->setToolTip(tr("Rewrite metadata tags on copied files when bypassing conversion"));
-
+        tr("Copy file without conversion if the source extension matches the target preset extension\n"
+           "(re-tagging after copy can be enabled in Settings -> Configure qddbconv...)"));
     optLayout->addWidget(m_bypassSameFormatCheck);
-    optLayout->addWidget(m_retagAfterCopyCheck);
 
     QFormLayout *optForm = new QFormLayout();
+    optForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_overwriteCombo = new QComboBox(optGroup);
+    m_overwriteCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_overwriteCombo->addItem(tr("Prompt"), 0);
     m_overwriteCombo->addItem(tr("Skip existing file"), 1);
     m_overwriteCombo->addItem(tr("Overwrite existing file"), 2);
@@ -488,6 +671,7 @@ void MainWindow::setupUi()
     optForm->addRow(tr("When file exists:"), m_overwriteCombo);
 
     m_threadsSpin = new QSpinBox(optGroup);
+    m_threadsSpin->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_threadsSpin->setRange(1, 64);
     m_threadsSpin->setValue(qMax(1, QThread::idealThreadCount()));
     m_threadsSpin->setToolTip(tr("Number of tracks to convert simultaneously across CPU cores"));
@@ -574,7 +758,6 @@ void MainWindow::setupUi()
 
     /* Wire signals for live preview and tooltip updates */
     connect(m_browseFolderBtn, &QPushButton::clicked, this, &MainWindow::onBrowseOutputFolder);
-    connect(m_presetsBtn, &QPushButton::clicked, this, &MainWindow::onManagePresets);
     connect(m_outFolderEdit, &QLineEdit::textChanged, this, [this]() {
         updateControlTooltips();
         updateOutputPreview();
@@ -620,6 +803,139 @@ void MainWindow::onChangeToolButtonStyle(Qt::ToolButtonStyle style)
     if (m_toolbarStyleGroup) {
         for (QAction *a : m_toolbarStyleGroup->actions()) {
             if (a->data().toInt() == static_cast<int>(style)) {
+                a->setChecked(true);
+                break;
+            }
+        }
+    }
+}
+
+void MainWindow::refreshActionIcons()
+{
+    const QColor fg = qApp->palette().color(QPalette::ButtonText);
+    if (m_actAddFiles)        m_actAddFiles->setIcon(makeBreezeFallbackIcon(QStringLiteral("document-open"), fg));
+    if (m_actAddFolder)       m_actAddFolder->setIcon(makeBreezeFallbackIcon(QStringLiteral("folder-open"), fg));
+    if (m_actAddCue)          m_actAddCue->setIcon(makeBreezeFallbackIcon(QStringLiteral("media-optical-audio"), fg));
+    if (m_actStartConvert)    m_actStartConvert->setIcon(makeBreezeFallbackIcon(QStringLiteral("media-playback-start"), fg));
+    if (m_actCancelConvert)   m_actCancelConvert->setIcon(makeBreezeFallbackIcon(QStringLiteral("process-stop"), fg));
+    if (m_actQuit)            m_actQuit->setIcon(makeBreezeFallbackIcon(QStringLiteral("application-exit"), fg));
+    if (m_actEditMetadata)    m_actEditMetadata->setIcon(makeBreezeFallbackIcon(QStringLiteral("document-properties"), fg));
+    if (m_actReloadMetadata)  m_actReloadMetadata->setIcon(makeBreezeFallbackIcon(QStringLiteral("view-refresh"), fg));
+    if (m_actOpenSourceFolder)m_actOpenSourceFolder->setIcon(makeBreezeFallbackIcon(QStringLiteral("folder"), fg));
+    if (m_actSelectAll)       m_actSelectAll->setIcon(makeBreezeFallbackIcon(QStringLiteral("edit-select-all"), fg));
+    if (m_actRemoveSelected)  m_actRemoveSelected->setIcon(makeBreezeFallbackIcon(QStringLiteral("list-remove"), fg));
+    if (m_actClearList)       m_actClearList->setIcon(makeBreezeFallbackIcon(QStringLiteral("edit-clear-list"), fg));
+    if (m_actShowMenuBar)     m_actShowMenuBar->setIcon(makeBreezeFallbackIcon(QStringLiteral("show-menu"), fg));
+    if (m_actPresets)         m_actPresets->setIcon(makeBreezeFallbackIcon(QStringLiteral("configure"), fg));
+    if (m_actPreferences)     m_actPreferences->setIcon(makeBreezeFallbackIcon(QStringLiteral("preferences-system"), fg));
+    if (m_actAbout)           m_actAbout->setIcon(makeBreezeFallbackIcon(QStringLiteral("help-about"), fg));
+    if (m_hamburgerBtn)       m_hamburgerBtn->setIcon(makeBreezeFallbackIcon(QStringLiteral("application-menu"), fg));
+    if (m_convertBtn && m_actStartConvert) m_convertBtn->setIcon(m_actStartConvert->icon());
+    if (m_cancelBtn && m_actCancelConvert) m_cancelBtn->setIcon(m_actCancelConvert->icon());
+}
+
+void MainWindow::applyUiTheme(const QString &themeId)
+{
+    static QString s_initialStyleName;
+    static QPalette s_initialPalette;
+    static bool s_savedInitial = false;
+    if (!s_savedInitial && qApp && qApp->style()) {
+        s_initialStyleName = qApp->style()->objectName();
+        s_initialPalette = qApp->palette();
+        s_savedInitial = true;
+    }
+
+    m_uiTheme = themeId;
+
+    if (themeId == QLatin1String("breeze-light")) {
+        QStyle *base = QStyleFactory::create(QStringLiteral("Breeze"));
+        if (!base)
+            base = QStyleFactory::create(QStringLiteral("Fusion"));
+        if (base)
+            qApp->setStyle(new CleanUiProxyStyle(base));
+
+        QPalette pal;
+        pal.setColor(QPalette::Window,          QColor(0xef, 0xf0, 0xf1));
+        pal.setColor(QPalette::WindowText,      QColor(0x23, 0x26, 0x29));
+        pal.setColor(QPalette::Base,            QColor(0xfc, 0xfc, 0xfc));
+        pal.setColor(QPalette::AlternateBase,   QColor(0xf4, 0xf5, 0xf6));
+        pal.setColor(QPalette::ToolTipBase,     QColor(0x23, 0x26, 0x29));
+        pal.setColor(QPalette::ToolTipText,     QColor(0xef, 0xf0, 0xf1));
+        pal.setColor(QPalette::Text,            QColor(0x23, 0x26, 0x29));
+        pal.setColor(QPalette::Button,          QColor(0xf6, 0xf7, 0xf8));
+        pal.setColor(QPalette::ButtonText,      QColor(0x23, 0x26, 0x29));
+        pal.setColor(QPalette::BrightText,      QColor(0xff, 0xff, 0xff));
+        pal.setColor(QPalette::Light,           QColor(0xff, 0xff, 0xff));
+        pal.setColor(QPalette::Midlight,        QColor(0xf7, 0xf8, 0xf9));
+        pal.setColor(QPalette::Mid,             QColor(0xd2, 0xd4, 0xd6));
+        pal.setColor(QPalette::Dark,            QColor(0xb8, 0xbb, 0xbe));
+        pal.setColor(QPalette::Shadow,          QColor(0x88, 0x8b, 0x8e));
+        pal.setColor(QPalette::Link,            QColor(0x29, 0x80, 0xb9));
+        pal.setColor(QPalette::Highlight,       QColor(0x3d, 0xae, 0xe9));
+        pal.setColor(QPalette::HighlightedText, QColor(0xff, 0xff, 0xff));
+        pal.setColor(QPalette::Disabled, QPalette::Text,       QColor(0x95, 0x99, 0x9c));
+        pal.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(0x95, 0x99, 0x9c));
+        pal.setColor(QPalette::Disabled, QPalette::WindowText, QColor(0x95, 0x99, 0x9c));
+        qApp->setPalette(pal);
+        qApp->setStyleSheet(QString());
+    } else if (themeId == QLatin1String("breeze-dark")) {
+        QStyle *base = QStyleFactory::create(QStringLiteral("Fusion"));
+        if (base)
+            qApp->setStyle(new CleanUiProxyStyle(base));
+
+        QPalette pal;
+        pal.setColor(QPalette::Window,          QColor(0x2a, 0x2e, 0x32));
+        pal.setColor(QPalette::WindowText,      QColor(0xef, 0xf0, 0xf1));
+        pal.setColor(QPalette::Base,            QColor(0x1b, 0x1e, 0x20));
+        pal.setColor(QPalette::AlternateBase,   QColor(0x23, 0x26, 0x29));
+        pal.setColor(QPalette::ToolTipBase,     QColor(0x31, 0x36, 0x3b));
+        pal.setColor(QPalette::ToolTipText,     QColor(0xef, 0xf0, 0xf1));
+        pal.setColor(QPalette::Text,            QColor(0xef, 0xf0, 0xf1));
+        pal.setColor(QPalette::Button,          QColor(0x31, 0x36, 0x3b));
+        pal.setColor(QPalette::ButtonText,      QColor(0xef, 0xf0, 0xf1));
+        pal.setColor(QPalette::BrightText,      QColor(0xff, 0xff, 0xff));
+        pal.setColor(QPalette::Light,           QColor(0x45, 0x4c, 0x52));
+        pal.setColor(QPalette::Midlight,        QColor(0x3a, 0x40, 0x45));
+        pal.setColor(QPalette::Mid,             QColor(0x25, 0x29, 0x2c));
+        pal.setColor(QPalette::Dark,            QColor(0x1d, 0x20, 0x23));
+        pal.setColor(QPalette::Shadow,          QColor(0x12, 0x14, 0x16));
+        pal.setColor(QPalette::Link,            QColor(0x3d, 0xae, 0xe9));
+        pal.setColor(QPalette::Highlight,       QColor(0x3d, 0xae, 0xe9));
+        pal.setColor(QPalette::HighlightedText, QColor(0xff, 0xff, 0xff));
+        pal.setColor(QPalette::Disabled, QPalette::Text,       QColor(0x6e, 0x73, 0x78));
+        pal.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(0x6e, 0x73, 0x78));
+        pal.setColor(QPalette::Disabled, QPalette::WindowText, QColor(0x6e, 0x73, 0x78));
+        qApp->setPalette(pal);
+        qApp->setStyleSheet(QString());
+    } else if (themeId == QLatin1String("windowsvista")) {
+        QStyle *base = QStyleFactory::create(QStringLiteral("windowsvista"));
+        if (!base)
+            base = QStyleFactory::create(QStringLiteral("Fusion"));
+        if (base)
+            qApp->setStyle(new CleanUiProxyStyle(base));
+        qApp->setPalette(qApp->style()->standardPalette());
+        qApp->setStyleSheet(QString());
+    } else {
+        QStyle *base = !s_initialStyleName.isEmpty()
+            ? QStyleFactory::create(s_initialStyleName)
+            : nullptr;
+        if (!base)
+            base = QStyleFactory::create(QStringLiteral("Fusion"));
+        if (base)
+            qApp->setStyle(new CleanUiProxyStyle(base));
+        qApp->setPalette(s_initialPalette);
+        qApp->setStyleSheet(QString());
+    }
+
+    refreshActionIcons();
+}
+
+void MainWindow::onChangeUiTheme(const QString &themeId)
+{
+    applyUiTheme(themeId);
+    if (m_themeGroup) {
+        for (QAction *a : m_themeGroup->actions()) {
+            if (a->data().toString() == themeId) {
                 a->setChecked(true);
                 break;
             }
@@ -876,8 +1192,8 @@ void MainWindow::onEditTrackMetadata()
                 updated.sourcePath,
                 tagPreset,
                 m_embedCoverCheck->isChecked(),
-                m_resizeCoverCheck->isChecked(),
-                m_maxCoverSpin->value(),
+                m_resizeCoverArt,
+                m_maxCoverSizePx,
                 err)) {
             QMessageBox::information(&dlg, tr("Tags Written"),
                 tr("Metadata tags were written to:\n%1").arg(updated.sourcePath));
@@ -1009,31 +1325,122 @@ void MainWindow::onOpenPreferences()
 
     QDialog dlg(this);
     dlg.setWindowTitle(tr("Configure qddbconv"));
-    dlg.setMinimumWidth(480);
+    dlg.setMinimumWidth(580);
 
     QVBoxLayout *layout = new QVBoxLayout(&dlg);
-    QFormLayout *form = new QFormLayout();
+
+    /* 1. External Tools & Directories Group */
+    QGroupBox *pathsGroup = new QGroupBox(tr("External Tools && Directories"), &dlg);
+    QFormLayout *pathsForm = new QFormLayout(pathsGroup);
+    pathsForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
     QLineEdit *ffmpegEdit = new QLineEdit(
-        s.value(QStringLiteral("ffmpegPath"), QStringLiteral("ffmpeg")).toString(), &dlg);
+        s.value(QStringLiteral("ffmpegPath"), QStringLiteral("ffmpeg")).toString(), pathsGroup);
     ffmpegEdit->setToolTip(tr("Path or command name for ffmpeg executable"));
 
     QLineEdit *ffprobeEdit = new QLineEdit(
-        s.value(QStringLiteral("ffprobePath"), QStringLiteral("ffprobe")).toString(), &dlg);
+        s.value(QStringLiteral("ffprobePath"), QStringLiteral("ffprobe")).toString(), pathsGroup);
     ffprobeEdit->setToolTip(tr("Path or command name for ffprobe executable"));
 
+    QHBoxLayout *tempRow = new QHBoxLayout();
     QLineEdit *tempDirEdit = new QLineEdit(
-        s.value(QStringLiteral("tempDir"), QDir::tempPath()).toString(), &dlg);
+        s.value(QStringLiteral("tempDir"), QDir::tempPath()).toString(), pathsGroup);
     tempDirEdit->setToolTip(tr("Directory used for temporary decoded WAV files (e.g. /tmp)"));
+    QPushButton *browseTempBtn = new QPushButton(tr("Browse..."), pathsGroup);
+    connect(browseTempBtn, &QPushButton::clicked, &dlg, [&dlg, tempDirEdit]() {
+        QString dir = QFileDialog::getExistingDirectory(
+            &dlg, tr("Select Temporary WAV Directory"), tempDirEdit->text());
+        if (!dir.isEmpty())
+            tempDirEdit->setText(dir);
+    });
+    tempRow->addWidget(tempDirEdit, 1);
+    tempRow->addWidget(browseTempBtn);
 
-    QCheckBox *confirmClearCheck = new QCheckBox(tr("Ask for confirmation before clearing track queue"), &dlg);
+    QHBoxLayout *presetsDirRow = new QHBoxLayout();
+    QLineEdit *presetsDirEdit = new QLineEdit(PresetManager::userPresetDir(), pathsGroup);
+    presetsDirEdit->setPlaceholderText(PresetManager::defaultUserPresetDir());
+#ifdef Q_OS_WIN
+    presetsDirEdit->setToolTip(
+        tr("Directory where custom encoder presets (*.txt) are stored.\n"
+           "Default: %LOCALAPPDATA%\\qddbconv\\presets (or <app_folder>\\presets in portable mode)."));
+#else
+    presetsDirEdit->setToolTip(
+        tr("Directory where custom encoder presets (*.txt) are stored.\n"
+           "Default: $XDG_DATA_HOME/qddbconv/presets (~/.local/share/qddbconv/presets)."));
+#endif
+    QPushButton *browsePresetsBtn = new QPushButton(tr("Browse..."), pathsGroup);
+    connect(browsePresetsBtn, &QPushButton::clicked, &dlg, [&dlg, presetsDirEdit]() {
+        QString startDir = presetsDirEdit->text().trimmed();
+        if (startDir.isEmpty())
+            startDir = PresetManager::defaultUserPresetDir();
+        QString dir = QFileDialog::getExistingDirectory(
+            &dlg, tr("Select User Presets Directory"), startDir);
+        if (!dir.isEmpty())
+            presetsDirEdit->setText(dir);
+    });
+    QPushButton *defaultPresetsBtn = new QPushButton(tr("Default"), pathsGroup);
+    defaultPresetsBtn->setToolTip(tr("Reset to default user presets directory (%1)")
+                                      .arg(PresetManager::defaultUserPresetDir()));
+    connect(defaultPresetsBtn, &QPushButton::clicked, &dlg, [presetsDirEdit]() {
+        presetsDirEdit->setText(PresetManager::defaultUserPresetDir());
+    });
+    presetsDirRow->addWidget(presetsDirEdit, 1);
+    presetsDirRow->addWidget(browsePresetsBtn);
+    presetsDirRow->addWidget(defaultPresetsBtn);
+#ifdef Q_OS_WIN
+    QPushButton *portablePresetsBtn = new QPushButton(tr("Portable (./presets)"), pathsGroup);
+    portablePresetsBtn->setToolTip(
+        tr("Store custom presets in the 'presets' subfolder inside the qddbconv application folder"));
+    connect(portablePresetsBtn, &QPushButton::clicked, &dlg, [presetsDirEdit]() {
+        presetsDirEdit->setText(
+            QDir::cleanPath(QCoreApplication::applicationDirPath() + QLatin1String("/presets")));
+    });
+    presetsDirRow->addWidget(portablePresetsBtn);
+#endif
+
+    pathsForm->addRow(tr("FFmpeg binary:"), ffmpegEdit);
+    pathsForm->addRow(tr("FFprobe binary:"), ffprobeEdit);
+    pathsForm->addRow(tr("Temporary WAV directory:"), tempRow);
+    pathsForm->addRow(tr("User presets directory:"), presetsDirRow);
+    layout->addWidget(pathsGroup);
+
+    /* 2. Cover Art & File Copy Group */
+    QGroupBox *coverCopyGroup = new QGroupBox(tr("Cover Art && File Copy"), &dlg);
+    QVBoxLayout *coverCopyLayout = new QVBoxLayout(coverCopyGroup);
+
+    QHBoxLayout *resizeCoverRow = new QHBoxLayout();
+    QCheckBox *resizeCoverCheck = new QCheckBox(tr("Resize embedded cover art if larger than:"), coverCopyGroup);
+    resizeCoverCheck->setChecked(m_resizeCoverArt);
+    resizeCoverCheck->setToolTip(tr("Downscale large high-resolution cover scans before embedding into audio files"));
+    QSpinBox *maxCoverSpin = new QSpinBox(coverCopyGroup);
+    maxCoverSpin->setRange(100, 4096);
+    maxCoverSpin->setSingleStep(100);
+    maxCoverSpin->setValue(m_maxCoverSizePx);
+    maxCoverSpin->setSuffix(tr(" px"));
+    maxCoverSpin->setEnabled(m_resizeCoverArt);
+    maxCoverSpin->setToolTip(tr("Maximum width or height in pixels for embedded cover art"));
+    connect(resizeCoverCheck, &QCheckBox::toggled, maxCoverSpin, &QWidget::setEnabled);
+    resizeCoverRow->addWidget(resizeCoverCheck);
+    resizeCoverRow->addWidget(maxCoverSpin);
+    resizeCoverRow->addStretch();
+    coverCopyLayout->addLayout(resizeCoverRow);
+
+    QCheckBox *retagAfterCopyCheck = new QCheckBox(
+        tr("Re-tag copied files when bypassing conversion (same format)"), coverCopyGroup);
+    retagAfterCopyCheck->setChecked(m_retagAfterCopy);
+    retagAfterCopyCheck->setToolTip(
+        tr("Rewrite metadata tags and cover art on copied files when 'Copy file without conversion' is active"));
+    coverCopyLayout->addWidget(retagAfterCopyCheck);
+    layout->addWidget(coverCopyGroup);
+
+    /* 3. Queue & Interface Behavior Group */
+    QGroupBox *queueGroup = new QGroupBox(tr("Queue && Interface"), &dlg);
+    QVBoxLayout *queueLayout = new QVBoxLayout(queueGroup);
+    QCheckBox *confirmClearCheck = new QCheckBox(
+        tr("Ask for confirmation before clearing track queue"), queueGroup);
     confirmClearCheck->setChecked(s.value(QStringLiteral("confirmClearList"), false).toBool());
-
-    form->addRow(tr("FFmpeg binary:"), ffmpegEdit);
-    form->addRow(tr("FFprobe binary:"), ffprobeEdit);
-    form->addRow(tr("Temporary WAV directory:"), tempDirEdit);
-    form->addRow(QString(), confirmClearCheck);
-    layout->addLayout(form);
+    queueLayout->addWidget(confirmClearCheck);
+    layout->addWidget(queueGroup);
 
     QDialogButtonBox *box = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -1045,7 +1452,20 @@ void MainWindow::onOpenPreferences()
         s.setValue(QStringLiteral("ffmpegPath"), ffmpegEdit->text().trimmed());
         s.setValue(QStringLiteral("ffprobePath"), ffprobeEdit->text().trimmed());
         s.setValue(QStringLiteral("tempDir"), tempDirEdit->text().trimmed());
+        QString newPresetsDir = QDir::cleanPath(presetsDirEdit->text().trimmed());
+        if (newPresetsDir.isEmpty() || newPresetsDir == PresetManager::defaultUserPresetDir())
+            s.remove(QStringLiteral("presetsDir"));
+        else
+            s.setValue(QStringLiteral("presetsDir"), newPresetsDir);
+        m_resizeCoverArt = resizeCoverCheck->isChecked();
+        m_maxCoverSizePx = maxCoverSpin->value();
+        m_retagAfterCopy = retagAfterCopyCheck->isChecked();
+        s.setValue(QStringLiteral("resizeCoverArt"), m_resizeCoverArt);
+        s.setValue(QStringLiteral("maxCoverSizePx"), m_maxCoverSizePx);
+        s.setValue(QStringLiteral("retagAfterCopy"), m_retagAfterCopy);
         s.setValue(QStringLiteral("confirmClearList"), confirmClearCheck->isChecked());
+        m_presets = PresetManager::loadAllPresets();
+        populatePresetCombo();
     }
 }
 
@@ -1054,7 +1474,7 @@ void MainWindow::onAbout()
     QMessageBox::about(
         this,
         tr("About Qddbconv"),
-        tr("<h3>Qddbconv audio converter %1</h3>"
+        tr("<h3>Qddbconv audio converter v%1</h3>"
            "<p><b>Copyright &copy; 2026 goberghen &amp; Arena.ai Agent</b></p>"
            "<p>Licensed under the <b>GNU General Public License v2.0 (GPL-2.0)</b>.</p>"
            "<p>Standalone Qt6 multi-threaded audio converter inspired by the UX and "
@@ -1091,8 +1511,11 @@ void MainWindow::updateControlTooltips()
     if (idx >= 0 && idx < m_presets.size()) {
         const EncoderPreset &p = m_presets[idx];
         m_encoderCombo->setToolTip(
-            tr("Preset: %1\nExtension: .%2\nCommand: %3")
-                .arg(p.title, p.ext, p.encoder.isEmpty() ? tr("(Internal RIFF WAVE writer)") : p.encoder));
+            tr("Preset: %1\nExtension: .%2\nCommand: %3\n%4")
+                .arg(p.title,
+                     p.ext,
+                     p.encoder.isEmpty() ? tr("(Internal RIFF WAVE writer)") : p.encoder,
+                     AudioConverter::describePresetExecution(p)));
     }
 }
 
@@ -1107,8 +1530,11 @@ void MainWindow::populatePresetCombo()
         m_encoderCombo->addItem(label);
         m_encoderCombo->setItemData(
             i,
-            tr("Preset: %1\nExtension: .%2\nCommand: %3")
-                .arg(p.title, p.ext, p.encoder.isEmpty() ? tr("(Internal RIFF WAVE writer)") : p.encoder),
+            tr("Preset: %1\nExtension: .%2\nCommand: %3\n%4")
+                .arg(p.title,
+                     p.ext,
+                     p.encoder.isEmpty() ? tr("(Internal RIFF WAVE writer)") : p.encoder,
+                     AudioConverter::describePresetExecution(p)),
             Qt::ToolTipRole);
     }
     int idx = m_encoderCombo->findText(currentTitle);
@@ -1133,10 +1559,10 @@ void MainWindow::loadSettings()
     m_writeToSourceCheck->setChecked(s.value(QStringLiteral("writeToSourceFolder"), false).toBool());
     m_preserveStructureCheck->setChecked(s.value(QStringLiteral("preserveFolderStructure"), false).toBool());
     m_embedCoverCheck->setChecked(s.value(QStringLiteral("embedCoverArt"), true).toBool());
-    m_resizeCoverCheck->setChecked(s.value(QStringLiteral("resizeCoverArt"), false).toBool());
-    m_maxCoverSpin->setValue(qBound(100, s.value(QStringLiteral("maxCoverSizePx"), 1000).toInt(), 4096));
+    m_resizeCoverArt = s.value(QStringLiteral("resizeCoverArt"), false).toBool();
+    m_maxCoverSizePx = qBound(100, s.value(QStringLiteral("maxCoverSizePx"), 1000).toInt(), 4096);
     m_bypassSameFormatCheck->setChecked(s.value(QStringLiteral("bypassSameFormat"), false).toBool());
-    m_retagAfterCopyCheck->setChecked(s.value(QStringLiteral("retagAfterCopy"), false).toBool());
+    m_retagAfterCopy = s.value(QStringLiteral("retagAfterCopy"), false).toBool();
 
     int presetIdx = s.value(QStringLiteral("encoderPresetIndex"), 2).toInt();
     if (presetIdx >= 0 && presetIdx < m_encoderCombo->count())
@@ -1157,6 +1583,14 @@ void MainWindow::loadSettings()
 
     int tbStyle = s.value(QStringLiteral("toolButtonStyle"), static_cast<int>(Qt::ToolButtonTextBesideIcon)).toInt();
     onChangeToolButtonStyle(static_cast<Qt::ToolButtonStyle>(tbStyle));
+
+#ifdef Q_OS_WIN
+    QString defaultTheme = QStringLiteral("breeze-light");
+#else
+    QString defaultTheme = QStringLiteral("system");
+#endif
+    QString themeId = s.value(QStringLiteral("uiTheme"), defaultTheme).toString();
+    onChangeUiTheme(themeId);
 }
 
 void MainWindow::saveSettings()
@@ -1167,10 +1601,10 @@ void MainWindow::saveSettings()
     s.setValue(QStringLiteral("writeToSourceFolder"), m_writeToSourceCheck->isChecked());
     s.setValue(QStringLiteral("preserveFolderStructure"), m_preserveStructureCheck->isChecked());
     s.setValue(QStringLiteral("embedCoverArt"), m_embedCoverCheck->isChecked());
-    s.setValue(QStringLiteral("resizeCoverArt"), m_resizeCoverCheck->isChecked());
-    s.setValue(QStringLiteral("maxCoverSizePx"), m_maxCoverSpin->value());
+    s.setValue(QStringLiteral("resizeCoverArt"), m_resizeCoverArt);
+    s.setValue(QStringLiteral("maxCoverSizePx"), m_maxCoverSizePx);
     s.setValue(QStringLiteral("bypassSameFormat"), m_bypassSameFormatCheck->isChecked());
-    s.setValue(QStringLiteral("retagAfterCopy"), m_retagAfterCopyCheck->isChecked());
+    s.setValue(QStringLiteral("retagAfterCopy"), m_retagAfterCopy);
     s.setValue(QStringLiteral("encoderPresetIndex"), m_encoderCombo->currentIndex());
     s.setValue(QStringLiteral("sampleFormatIndex"), m_sampleFormatCombo->currentIndex());
     s.setValue(QStringLiteral("sampleRateIndex"), m_sampleRateCombo->currentIndex());
@@ -1178,6 +1612,7 @@ void MainWindow::saveSettings()
     s.setValue(QStringLiteral("overwriteAction"), m_overwriteCombo->currentIndex());
     s.setValue(QStringLiteral("showMenuBar"), m_actShowMenuBar->isChecked());
     s.setValue(QStringLiteral("toolButtonStyle"), static_cast<int>(m_toolbarStyle));
+    s.setValue(QStringLiteral("uiTheme"), m_uiTheme);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -1313,10 +1748,10 @@ ConverterSettings MainWindow::gatherSettings() const
     s.writeToSourceFolder = m_writeToSourceCheck->isChecked();
     s.preserveFolderStructure = m_preserveStructureCheck->isChecked();
     s.embedCoverArt = m_embedCoverCheck->isChecked();
-    s.resizeCoverArt = m_resizeCoverCheck->isChecked();
-    s.maxCoverSizePx = m_maxCoverSpin->value();
+    s.resizeCoverArt = m_resizeCoverArt;
+    s.maxCoverSizePx = m_maxCoverSizePx;
     s.bypassSameFormat = m_bypassSameFormatCheck->isChecked();
-    s.retagAfterCopy = m_retagAfterCopyCheck->isChecked();
+    s.retagAfterCopy = m_retagAfterCopy;
 
     int fmtCode = m_sampleFormatCombo->currentData().toInt();
     if (fmtCode == 0) {
@@ -1465,9 +1900,16 @@ void MainWindow::onStartConversion()
 
             QString err;
             bool ok = AudioConverter::convertTrack(track, outPath, settings, &m_cancelled, err);
-            QString status = ok
-                ? tr("Done")
-                : (m_cancelled.load() ? tr("Cancelled") : tr("Error: %1").arg(err));
+            QString status;
+            if (ok) {
+                status = err.isEmpty()
+                    ? tr("Done")
+                    : tr("Done (fallback: %1)").arg(err);
+            } else {
+                status = m_cancelled.load()
+                    ? tr("Cancelled")
+                    : tr("Error: %1").arg(err);
+            }
 
             emit trackStatusChanged(i, status, true, ok);
         });
@@ -1509,6 +1951,26 @@ void MainWindow::onTrackStatusUpdated(int row, const QString &status, bool finis
             m_statusLabel->setText(tr("Cancelled (%1/%2 completed)").arg(m_completedTasks - m_failedTasks).arg(m_activeTasks));
         } else if (m_failedTasks > 0) {
             m_statusLabel->setText(tr("Finished with %1 error(s) (hover Status column for details)").arg(m_failedTasks));
+            QStringList errLines;
+            for (int i = 0; i < m_tracks.size() && errLines.size() < 10; ++i) {
+                if (m_tracks[i].statusText.startsWith(QLatin1String("Error:"))) {
+                    errLines.append(QStringLiteral("• %1: %2")
+                                        .arg(QFileInfo(m_tracks[i].sourcePath).fileName(),
+                                             m_tracks[i].statusText));
+                }
+            }
+            if (m_failedTasks > errLines.size()) {
+                errLines.append(tr("...and %1 more track(s).").arg(m_failedTasks - errLines.size()));
+            }
+            QMessageBox::warning(
+                this,
+                tr("Conversion Completed with Errors"),
+                tr("%1 of %2 track(s) failed to convert:\n\n%3\n\n"
+                   "Note: Qddbconv automatically attempts fallbacks (standalone CLI encoder -> FFmpeg library encoder -> FFmpeg native encoder, "
+                   "and openmpt123/gme2wav for tracker/chiptune files). Check that the required codec or tool is installed.")
+                    .arg(m_failedTasks)
+                    .arg(m_activeTasks)
+                    .arg(errLines.join(QLatin1Char('\n'))));
         } else {
             m_statusLabel->setText(tr("Finished all %1 track(s) successfully").arg(m_activeTasks));
         }

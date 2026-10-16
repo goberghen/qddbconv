@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="1.1.0"
+VERSION="1.2.0"
 APPIMAGE_NAME="Qddbconv-${VERSION}-x86_64.AppImage"
 BUILD_DIR="/tmp/qddbconv-appimage-build"
 APPDIR="/tmp/Qddbconv.AppDir"
@@ -37,7 +37,7 @@ cp "$SCRIPT_DIR/qddbconv.svg" "$APPDIR/.DirIcon"
 cp "$SCRIPT_DIR/qddbconv.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/qddbconv.svg"
 cp "$SCRIPT_DIR/qddbconv.1" "$APPDIR/usr/share/man/man1/qddbconv.1"
 gzip -9n -c "$SCRIPT_DIR/qddbconv.1" > "$APPDIR/usr/share/man/man1/qddbconv.1.gz"
-cp "$SCRIPT_DIR/README.md" "$SCRIPT_DIR/INSTALL.md" "$SCRIPT_DIR/LICENSE" "$APPDIR/usr/share/doc/qddbconv/"
+cp "$SCRIPT_DIR/README.md" "$SCRIPT_DIR/INSTALL.md" "$SCRIPT_DIR/CHANGELOG.md" "$SCRIPT_DIR/LICENSE" "$APPDIR/usr/share/doc/qddbconv/"
 
 cat > "$APPDIR/usr/bin/qt.conf" <<'EOF'
 [Paths]
@@ -57,8 +57,15 @@ done
 
 # Bundle ONLY libqxdgdesktopportal.so in platformthemes (provides native KDE file dialogs
 # with drives/mounts/Places over D-Bus without loading KIO/kioworker in-process)
-if [ -f "${QT_PLUGIN_ROOT}/platformthemes/libqxdgdesktopportal.so" ]; then
-    cp "${QT_PLUGIN_ROOT}/platformthemes/libqxdgdesktopportal.so" "$APPDIR/usr/plugins/platformthemes/"
+if [ ! -f "${QT_PLUGIN_ROOT}/platformthemes/libqxdgdesktopportal.so" ]; then
+    echo "ERROR: ${QT_PLUGIN_ROOT}/platformthemes/libqxdgdesktopportal.so not found (install qt6-xdgdesktopportal-platformtheme)." >&2
+    exit 1
+fi
+cp "${QT_PLUGIN_ROOT}/platformthemes/libqxdgdesktopportal.so" "$APPDIR/usr/plugins/platformthemes/"
+
+if [ ! -f "$APPDIR/usr/plugins/styles/breeze6.so" ]; then
+    echo "ERROR: breeze6.so not found in ${QT_PLUGIN_ROOT}/styles (install kde-style-breeze)." >&2
+    exit 1
 fi
 
 if [ -d "${QT_PLUGIN_ROOT}/kf6/kwindowsystem" ]; then

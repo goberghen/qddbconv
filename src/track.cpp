@@ -7,6 +7,7 @@
 #include "track.h"
 #include "smaf2mid.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -18,6 +19,30 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QTextStream>
+
+static QString resolveProbeToolBin(const QString &name)
+{
+    if (name.isEmpty() || QFileInfo(name).isAbsolute())
+        return name;
+
+    const QString appDir = QCoreApplication::applicationDirPath();
+    if (!appDir.isEmpty()) {
+        const QStringList subDirs = { appDir, appDir + QLatin1String("/tools") };
+        for (const QString &dir : subDirs) {
+#ifdef Q_OS_WIN
+            if (!name.endsWith(QLatin1String(".exe"), Qt::CaseInsensitive)) {
+                QString candExe = dir + QLatin1Char('/') + name + QLatin1String(".exe");
+                if (QFileInfo::exists(candExe))
+                    return candExe;
+            }
+#endif
+            QString cand = dir + QLatin1Char('/') + name;
+            if (QFileInfo::exists(cand))
+                return cand;
+        }
+    }
+    return name;
+}
 
 static QString sanitizeMetaForPath(const QString &in)
 {
@@ -150,6 +175,7 @@ QImage TrackProbe::loadTrackCoverImage(const TrackItem &item, QString *sourceDes
         QString ffmpegBin = s.value(QStringLiteral("ffmpegPath"), QStringLiteral("ffmpeg")).toString().trimmed();
         if (ffmpegBin.isEmpty())
             ffmpegBin = QStringLiteral("ffmpeg");
+        ffmpegBin = resolveProbeToolBin(ffmpegBin);
 
         QProcess proc;
         QStringList args = {
@@ -204,6 +230,7 @@ TrackItem TrackProbe::probeFile(const QString &filePath)
     QFileInfo fi(filePath);
     item.sourcePath = fi.absoluteFilePath();
     item.title = fi.completeBaseName();
+    item.codecName = fi.suffix().toLower();
     item.statusText = QStringLiteral("Ready");
 
     /* Native probe for Yamaha SMAF (.mmf) ringtone files */
@@ -232,6 +259,7 @@ TrackItem TrackProbe::probeFile(const QString &filePath)
     QString ffprobeBin = s.value(QStringLiteral("ffprobePath"), QStringLiteral("ffprobe")).toString().trimmed();
     if (ffprobeBin.isEmpty())
         ffprobeBin = QStringLiteral("ffprobe");
+    ffprobeBin = resolveProbeToolBin(ffprobeBin);
 
     proc.start(ffprobeBin, args);
     if (!proc.waitForFinished(5000)) {
@@ -687,6 +715,7 @@ QString TrackProbe::computeOutputPath(const TrackItem &item,
         QString userBase = outFolderUser.trimmed().isEmpty() ? QDir::homePath() : outFolderUser.trimmed();
         QString srcDir = srcInfo.absolutePath();
         QString subPath = srcDir.mid(rootFolder.size());
+        subPath.remove(QLatin1Char(':'));
         if (!subPath.startsWith(QLatin1Char('/')))
             subPath.prepend(QLatin1Char('/'));
         baseOutFolder = userBase + subPath;

@@ -6,9 +6,11 @@
 
 #include "preset.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QVBoxLayout>
@@ -107,13 +109,43 @@ bool EncoderPreset::saveToFile(const QString &dirPath) const
     return true;
 }
 
+QString PresetManager::defaultUserPresetDir()
+{
+#ifdef Q_OS_WIN
+    /* On Windows, if a portable "presets" subfolder exists next to qddbconv.exe,
+     * use it automatically; otherwise default to %LOCALAPPDATA%\qddbconv\presets. */
+    const QString appDir = QCoreApplication::applicationDirPath();
+    if (!appDir.isEmpty()) {
+        const QString portableDir = appDir + QLatin1String("/presets");
+        if (QDir(portableDir).exists())
+            return QDir::cleanPath(portableDir);
+    }
+    QString base = qEnvironmentVariable("LOCALAPPDATA").trimmed();
+    if (base.isEmpty())
+        base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    if (base.isEmpty())
+        base = QDir::homePath() + QLatin1String("/AppData/Local");
+    return QDir::cleanPath(base + QLatin1String("/qddbconv/presets"));
+#else
+    /* On Linux/Unix, follow XDG Base Directory Specification:
+     * $XDG_DATA_HOME/qddbconv/presets with fallback to ~/.local/share/qddbconv/presets */
+    QString xdgData = qEnvironmentVariable("XDG_DATA_HOME").trimmed();
+    if (xdgData.isEmpty() || !QDir::isAbsolutePath(xdgData))
+        xdgData = QDir::homePath() + QLatin1String("/.local/share");
+    return QDir::cleanPath(xdgData + QLatin1String("/qddbconv/presets"));
+#endif
+}
+
 QString PresetManager::userPresetDir()
 {
-    QString cfg = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
-    if (cfg.isEmpty())
-        cfg = QDir::homePath() + QLatin1String("/.config");
-    /* Share user encoder presets directory with DeaDBeeF for 100% compatibility */
-    return cfg + QLatin1String("/deadbeef/presets/encoders");
+    QSettings s(QStringLiteral("qddbconv"), QStringLiteral("qddbconv"));
+    QString customDir = s.value(QStringLiteral("presetsDir")).toString().trimmed();
+    if (!customDir.isEmpty()) {
+        if (QDir::isRelativePath(customDir) && !QCoreApplication::applicationDirPath().isEmpty())
+            return QDir::cleanPath(QCoreApplication::applicationDirPath() + QLatin1Char('/') + customDir);
+        return QDir::cleanPath(customDir);
+    }
+    return defaultUserPresetDir();
 }
 
 QList<EncoderPreset> PresetManager::builtinPresets()
@@ -261,7 +293,7 @@ QList<EncoderPreset> PresetManager::loadAllPresets()
     for (const EncoderPreset &p : result)
         seenTitles.insert(p.title);
 
-    /* Load user presets from ~/.config/deadbeef/presets/encoders */
+    /* Load user presets from the configured or default qddbconv presets directory */
     QDir userDir(userPresetDir());
     if (userDir.exists()) {
         const QFileInfoList files = userDir.entryInfoList(QStringList() << "*.txt", QDir::Files, QDir::Name);
@@ -418,6 +450,15 @@ PresetListDialog::PresetListDialog(const QList<EncoderPreset> &presets, QWidget 
     bodyLayout->addLayout(btnLayout);
 
     mainLayout->addLayout(bodyLayout, 1);
+
+    QLabel *dirInfoLabel = new QLabel(
+        tr("User presets folder: %1").arg(QDir::toNativeSeparators(PresetManager::userPresetDir())),
+        this);
+    dirInfoLabel->setWordWrap(true);
+    dirInfoLabel->setToolTip(
+        tr("Custom presets are saved as plain-text .txt files (DeaDBeeF encoder preset format).\n"
+           "You can change this folder in Settings -> Configure qddbconv..."));
+    mainLayout->addWidget(dirInfoLabel);
 
     QDialogButtonBox *closeBox = new QDialogButtonBox(QDialogButtonBox::Close, this);
     connect(closeBox, &QDialogButtonBox::rejected, this, &QDialog::accept);
