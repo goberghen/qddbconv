@@ -80,7 +80,9 @@ QString TrackProbe::findFolderCoverArt(const QString &audioOrCueFilePath)
     const QString baseName = fi.completeBaseName();
     const QStringList validExts = {
         QStringLiteral("jpg"), QStringLiteral("jpeg"),
-        QStringLiteral("png"), QStringLiteral("webp"), QStringLiteral("bmp")
+        QStringLiteral("png"), QStringLiteral("webp"),
+        QStringLiteral("bmp"), QStringLiteral("gif"),
+        QStringLiteral("tif"), QStringLiteral("tiff")
     };
 
     auto searchInDir = [&](const QDir &d) -> QString {
@@ -157,8 +159,39 @@ QImage TrackProbe::loadTrackCoverImage(const TrackItem &item, QString *sourceDes
         return QImage();
     }
 
+    auto loadImageFileWithFallback = [](const QString &imgPath) -> QImage {
+        QImage img(imgPath);
+        if (!img.isNull())
+            return img;
+
+        /* Fallback: if a Qt imageformats plugin is missing for this format (e.g. WebP/TIFF/AVIF),
+         * decode the first frame via ffmpeg to PNG in memory (PNG is built into Qt6Gui core) */
+        QSettings s(QStringLiteral("qddbconv"), QStringLiteral("qddbconv"));
+        QString ffmpegBin = s.value(QStringLiteral("ffmpegPath"), QStringLiteral("ffmpeg")).toString().trimmed();
+        if (ffmpegBin.isEmpty())
+            ffmpegBin = QStringLiteral("ffmpeg");
+        ffmpegBin = resolveProbeToolBin(ffmpegBin);
+
+        QProcess proc;
+        QStringList args = {
+            QStringLiteral("-v"), QStringLiteral("quiet"),
+            QStringLiteral("-i"), imgPath,
+            QStringLiteral("-an"),
+            QStringLiteral("-vcodec"), QStringLiteral("png"),
+            QStringLiteral("-frames:v"), QStringLiteral("1"),
+            QStringLiteral("-f"), QStringLiteral("image2pipe"),
+            QStringLiteral("pipe:1")
+        };
+        proc.start(ffmpegBin, args);
+        if (proc.waitForFinished(4000)) {
+            QByteArray pngBytes = proc.readAllStandardOutput();
+            img = QImage::fromData(pngBytes, "PNG");
+        }
+        return img;
+    };
+
     if (!item.coverArtPath.isEmpty() && QFileInfo::exists(item.coverArtPath)) {
-        QImage img(item.coverArtPath);
+        QImage img = loadImageFileWithFallback(item.coverArtPath);
         if (!img.isNull()) {
             if (sourceDescription) {
                 *sourceDescription = QStringLiteral("%1 (%2x%3)")
@@ -207,7 +240,7 @@ QImage TrackProbe::loadTrackCoverImage(const TrackItem &item, QString *sourceDes
     if (fallbackCover.isEmpty() && !item.cuePath.isEmpty())
         fallbackCover = findFolderCoverArt(item.sourcePath);
     if (!fallbackCover.isEmpty() && QFileInfo::exists(fallbackCover)) {
-        QImage img(fallbackCover);
+        QImage img = loadImageFileWithFallback(fallbackCover);
         if (!img.isNull()) {
             if (sourceDescription) {
                 *sourceDescription = QStringLiteral("%1 (%2x%3)")

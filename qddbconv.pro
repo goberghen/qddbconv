@@ -1,7 +1,7 @@
 QT += core gui widgets concurrent
 CONFIG += c++17
 TARGET = qddbconv
-VERSION = 1.2.0
+VERSION = 1.2.1
 TEMPLATE = app
 
 INCLUDEPATH += src

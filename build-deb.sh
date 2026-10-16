@@ -6,7 +6,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="1.2.0"
+VERSION="$(sed -n 's/^project(qddbconv VERSION \([0-9.]*\).*/\1/p' "$SCRIPT_DIR/CMakeLists.txt")"
+VERSION="${VERSION:-1.2.1}"
 ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
 PKG_NAME="qddbconv_${VERSION}_${ARCH}"
 BUILD_DIR="/tmp/qddbconv-deb-build"
@@ -35,8 +36,9 @@ Section: sound
 Priority: optional
 Architecture: ${ARCH}
 Installed-Size: ${INSTALLED_KB}
-Depends: libc6, libstdc++6, libqt6widgets6, libqt6gui6, libqt6core6t64 | libqt6core6, libqt6concurrent6
-Recommends: ffmpeg, flac, lame, opus-tools, vorbis-tools, wavpack
+Depends: libc6 (>= 2.34), libgcc-s1 (>= 3.0), libstdc++6 (>= 11), libqt6core6t64 | libqt6core6, libqt6gui6, libqt6widgets6, libpng16-16t64 | libpng16-16, libjpeg62-turbo | libjpeg8, qt6-svg-plugins, qt6-image-formats-plugins, ffmpeg
+Recommends: flac, lame, opus-tools, vorbis-tools, wavpack, qt6-qpa-plugins, qt6-wayland, qt6-xdgdesktopportal-platformtheme
+Suggests: timidity | fluidsynth, openmpt123 | xmp, faac, fdkaac, twolame, musepack-tools
 Maintainer: goberghen <goberghen@users.noreply.github.com>
 Homepage: https://github.com/goberghen/qddbconv
 Description: Standalone Qt6 audio converter inspired by DeaDBeeF
@@ -44,7 +46,7 @@ Description: Standalone Qt6 audio converter inspired by DeaDBeeF
  inspired by the converter plugin of DeaDBeeF, deadbeef-qt5, and Qmmp.
  It supports DeaDBeeF encoder presets, CUE sheet splitting, Title Formatting
  output path templates, DSP resampling, tag editing, and automatic cover art
- embedding.
+ embedding (PNG, JPEG, WebP, BMP, GIF, TIFF).
 EOF
 
 chmod 0755 "$STAGE_DIR/DEBIAN"

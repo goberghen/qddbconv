@@ -1133,7 +1133,7 @@ void MainWindow::onEditTrackMetadata()
             &dlg,
             tr("Select Cover Image"),
             startDir,
-            tr("Images (*.jpg *.jpeg *.png *.webp *.bmp);;All Files (*)"));
+            tr("Images (*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tif *.tiff);;All Files (*)"));
         if (!file.isEmpty()) {
             chosenCoverPath = file;
             coverModified = true;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(qddbconv VERSION 1.2.0 LANGUAGES CXX)
+project(qddbconv VERSION 1.2.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,5 +41,7 @@ set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Standalone Qt6 audio converter inspired b
 set(CPACK_DEBIAN_PACKAGE_SECTION "sound")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
-set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "ffmpeg, flac, lame, opus-tools, vorbis-tools, wavpack")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libpng16-16t64 | libpng16-16, libjpeg62-turbo | libjpeg8, qt6-svg-plugins, qt6-image-formats-plugins, ffmpeg")
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "flac, lame, opus-tools, vorbis-tools, wavpack, qt6-qpa-plugins, qt6-wayland, qt6-xdgdesktopportal-platformtheme")
+set(CPACK_DEBIAN_PACKAGE_SUGGESTS "timidity | fluidsynth, openmpt123 | xmp, faac, fdkaac, twolame, musepack-tools")
 include(CPack)

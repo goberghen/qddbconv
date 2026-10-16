@@ -4,7 +4,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_VER="1.2.0"
+APP_VER="$(sed -n 's/^project(qddbconv VERSION \([0-9.]*\).*/\1/p' "$SCRIPT_DIR/CMakeLists.txt")"
+APP_VER="${APP_VER:-1.2.1}"
 QT_WIN_DIR="${QT_WIN_DIR:-/opt/qt6-win/6.8.2/mingw_64}"
 WIN_ENC_DIR="${WIN_ENC_DIR:-/opt/win-encoders/mingw64/bin}"
 MOC_BIN="${MOC_BIN:-/usr/lib/qt6/libexec/moc}"
@@ -84,12 +85,15 @@ for rtdll in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
     "$STRIP" --strip-unneeded "$PKG_DIR/$rtdll"
 done
 
-# Qt6 plugins
+# Qt6 plugins (Note: PNG & BMP are statically compiled directly inside Qt6Gui.dll;
+# JPEG, GIF, ICO, SVG, WebP, TIFF, TGA, WBMP, and ICNS are loaded from imageformats/)
 mkdir -p "$PKG_DIR/platforms" "$PKG_DIR/styles" "$PKG_DIR/imageformats" "$PKG_DIR/iconengines"
 cp -L "$QT_WIN_DIR/plugins/platforms/qwindows.dll" "$PKG_DIR/platforms/"
 cp -L "$QT_WIN_DIR/plugins/styles/qmodernwindowsstyle.dll" "$PKG_DIR/styles/"
-for imgp in qjpeg.dll qico.dll qgif.dll qsvg.dll; do
-    cp -L "$QT_WIN_DIR/plugins/imageformats/$imgp" "$PKG_DIR/imageformats/"
+for imgp in qjpeg.dll qico.dll qgif.dll qsvg.dll qwebp.dll qtiff.dll qtga.dll qwbmp.dll qicns.dll; do
+    if [ -f "$QT_WIN_DIR/plugins/imageformats/$imgp" ]; then
+        cp -L "$QT_WIN_DIR/plugins/imageformats/$imgp" "$PKG_DIR/imageformats/"
+    fi
 done
 cp -L "$QT_WIN_DIR/plugins/iconengines/qsvgicon.dll" "$PKG_DIR/iconengines/"
 

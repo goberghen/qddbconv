@@ -794,24 +794,27 @@ static void appendBigEndianU32(QByteArray &buf, quint32 val)
 }
 
 /* Build RFC 7845 / Xiph FLAC METADATA_BLOCK_PICTURE Base64 string for Ogg Vorbis & Opus */
-static QString buildVorbisMetadataBlockPicture(const QByteArray &jpegBytes, int width, int height)
+static QString buildVorbisMetadataBlockPicture(const QByteArray &imgBytes,
+                                               const QByteArray &mimeType,
+                                               int width,
+                                               int height,
+                                               int bitsPerPixel = 24)
 {
-    const QByteArray mime = QByteArrayLiteral("image/jpeg");
     const QByteArray desc = QByteArrayLiteral("Cover (front)");
     QByteArray block;
-    block.reserve(32 + mime.size() + desc.size() + jpegBytes.size());
+    block.reserve(32 + mimeType.size() + desc.size() + imgBytes.size());
 
     appendBigEndianU32(block, 3); /* Picture type 3 = Cover (front) */
-    appendBigEndianU32(block, static_cast<quint32>(mime.size()));
-    block.append(mime);
+    appendBigEndianU32(block, static_cast<quint32>(mimeType.size()));
+    block.append(mimeType);
     appendBigEndianU32(block, static_cast<quint32>(desc.size()));
     block.append(desc);
     appendBigEndianU32(block, static_cast<quint32>(width));
     appendBigEndianU32(block, static_cast<quint32>(height));
-    appendBigEndianU32(block, 24); /* 24-bit RGB */
-    appendBigEndianU32(block, 0);  /* 0 = non-indexed color */
-    appendBigEndianU32(block, static_cast<quint32>(jpegBytes.size()));
-    block.append(jpegBytes);
+    appendBigEndianU32(block, static_cast<quint32>(bitsPerPixel));
+    appendBigEndianU32(block, 0); /* 0 = non-indexed color */
+    appendBigEndianU32(block, static_cast<quint32>(imgBytes.size()));
+    block.append(imgBytes);
 
     return QString::fromLatin1(block.toBase64());
 }
@@ -840,37 +843,69 @@ bool AudioConverter::writeMetadataTags(const TrackItem &item,
 
     /* Prepare cover art if requested and available */
     QImage coverImg;
-    QByteArray coverJpegBytes;
+    QByteArray coverBytes;
     QString tempCoverPath;
     QString tempFfmetaPath;
 
     if (embedCoverArt && (isOggOrOpus || supportsStreamArt)) {
         coverImg = TrackProbe::loadTrackCoverImage(item);
         if (!coverImg.isNull()) {
+            bool wasResized = false;
             if (resizeCoverArt && maxCoverSizePx >= 64 &&
                 (coverImg.width() > maxCoverSizePx || coverImg.height() > maxCoverSizePx)) {
                 coverImg = coverImg.scaled(maxCoverSizePx, maxCoverSizePx,
                                            Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                wasResized = true;
             }
-            QBuffer buf(&coverJpegBytes);
-            buf.open(QIODevice::WriteOnly);
-            coverImg.save(&buf, "JPEG", 92);
 
-            if (supportsStreamArt && !coverJpegBytes.isEmpty()) {
-                QTemporaryFile tmpImg(configuredTempDir() + QLatin1String("/qddbconv_cover_XXXXXX.jpg"));
+            /* Resolve active external cover path (if any) to preserve lossless PNG or original JPEG bytes */
+            QString activeCoverFile = item.coverArtPath;
+            if (activeCoverFile.isEmpty() && !item.hasEmbeddedArt) {
+                activeCoverFile = TrackProbe::findFolderCoverArt(
+                    item.cuePath.isEmpty() ? item.sourcePath : item.cuePath);
+            }
+            const QString coverExt = QFileInfo(activeCoverFile).suffix().toLower();
+            const bool preferPng = (coverExt == QLatin1String("png") || coverImg.hasAlphaChannel());
+
+            /* If not resized and the source cover is already a standalone .png or .jpg/.jpeg on disk,
+             * read the original file bytes directly to avoid any generation loss */
+            if (!wasResized && !activeCoverFile.isEmpty() && QFileInfo::exists(activeCoverFile) &&
+                (coverExt == QLatin1String("png") || coverExt == QLatin1String("jpg") || coverExt == QLatin1String("jpeg"))) {
+                QFile rawCover(activeCoverFile);
+                if (rawCover.open(QIODevice::ReadOnly))
+                    coverBytes = rawCover.readAll();
+            }
+
+            if (coverBytes.isEmpty()) {
+                QBuffer buf(&coverBytes);
+                buf.open(QIODevice::WriteOnly);
+                if (preferPng)
+                    coverImg.save(&buf, "PNG");
+                else
+                    coverImg.save(&buf, "JPEG", 92);
+            }
+
+            const QString tempExt = preferPng ? QStringLiteral(".png") : QStringLiteral(".jpg");
+            const QByteArray mimeType = preferPng ? QByteArrayLiteral("image/png")
+                                                  : QByteArrayLiteral("image/jpeg");
+            const int bpp = (preferPng && coverImg.hasAlphaChannel()) ? 32 : 24;
+
+            if (supportsStreamArt && !coverBytes.isEmpty()) {
+                QTemporaryFile tmpImg(configuredTempDir() + QLatin1String("/qddbconv_cover_XXXXXX") + tempExt);
                 tmpImg.setAutoRemove(false);
                 if (tmpImg.open()) {
-                    tmpImg.write(coverJpegBytes);
+                    tmpImg.write(coverBytes);
                     tempCoverPath = tmpImg.fileName();
                     tmpImg.close();
                 }
-            } else if (isOggOrOpus && !coverJpegBytes.isEmpty()) {
+            } else if (isOggOrOpus && !coverBytes.isEmpty()) {
                 /* Write METADATA_BLOCK_PICTURE via an ffmetadata file rather than argv
                  * so cover images > 96 KB never hit Linux MAX_ARG_STRLEN (128 KB) in execve() */
                 QTemporaryFile tmpMeta(configuredTempDir() + QLatin1String("/qddbconv_meta_XXXXXX.txt"));
                 tmpMeta.setAutoRemove(false);
                 if (tmpMeta.open()) {
-                    QString b64Pic = buildVorbisMetadataBlockPicture(coverJpegBytes, coverImg.width(), coverImg.height());
+                    QString b64Pic = buildVorbisMetadataBlockPicture(
+                        coverBytes, mimeType, coverImg.width(), coverImg.height(), bpp);
                     tmpMeta.write(";FFMETADATA1\nMETADATA_BLOCK_PICTURE=");
                     tmpMeta.write(b64Pic.toLatin1());
                     tmpMeta.write("\n");

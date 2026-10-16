@@ -6,7 +6,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="1.2.0"
+VERSION="$(sed -n 's/^project(qddbconv VERSION \([0-9.]*\).*/\1/p' "$SCRIPT_DIR/CMakeLists.txt")"
+VERSION="${VERSION:-1.2.1}"
 APPIMAGE_NAME="Qddbconv-${VERSION}-x86_64.AppImage"
 BUILD_DIR="/tmp/qddbconv-appimage-build"
 APPDIR="/tmp/Qddbconv.AppDir"
@@ -65,6 +66,16 @@ cp "${QT_PLUGIN_ROOT}/platformthemes/libqxdgdesktopportal.so" "$APPDIR/usr/plugi
 
 if [ ! -f "$APPDIR/usr/plugins/styles/breeze6.so" ]; then
     echo "ERROR: breeze6.so not found in ${QT_PLUGIN_ROOT}/styles (install kde-style-breeze)." >&2
+    exit 1
+fi
+
+if [ ! -f "$APPDIR/usr/plugins/imageformats/libqwebp.so" ]; then
+    echo "ERROR: libqwebp.so not found in ${QT_PLUGIN_ROOT}/imageformats (install qt6-image-formats-plugins)." >&2
+    exit 1
+fi
+
+if [ ! -f "$APPDIR/usr/plugins/imageformats/libqsvg.so" ]; then
+    echo "ERROR: libqsvg.so not found in ${QT_PLUGIN_ROOT}/imageformats (install qt6-svg-plugins)." >&2
     exit 1
 fi
 
