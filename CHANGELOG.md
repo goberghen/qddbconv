@@ -5,6 +5,29 @@ This project adheres to [Semantic Versioning](https://semver.org/) (`vMAJOR.MINO
 
 ---
 
+## [v1.2.4] - 2026-10-18
+
+### Added
+- **Configurable MIDI synthesizer, custom binary paths & SoundFont (`.sf2`) selection (`src/smaf2mid.{h,cpp}`, `src/mainwindow.cpp`)**:
+  - Added a **MIDI & SMAF Synthesis** section in **Settings -> Configure qddbconv...** allowing users to choose the preferred MIDI synthesizer (`Auto (FluidSynth -> TiMidity++ fallback)` by default, `TiMidity++ (with FluidSynth fallback)`, `FluidSynth only`, or `TiMidity++ only`), custom `FluidSynth` and `TiMidity++` executable paths (with `Browse...` and `Default` buttons), and an optional custom `.sf2` SoundFont file (passed to `fluidsynth` and to `timidity -c` with prior `bank`/`drumset` patch mappings cleared so `timidity.cfg` / `freepats` / `fluidr3_gm.cfg` do not override the selected `.sf2`).
+  - Added SoundFont validation before running `fluidsynth` so that if no `.sf2` file is present (or if `fluidsynth` fails to load the SoundFont), `Auto` mode immediately falls back to `timidity` instead of producing a silent WAV.
+  - Added live **Active backend** inspection in **Configure qddbconv...** (including immediate reset when clicking `Default`) and a **MIDI Synthesizer** row in **Track Metadata & Properties -> Properties** (`Ctrl+I` / double-click) for `.mmf` and `.mid` tracks, showing the resolved synthesizer executable and SoundFont/config file (including symlink targets such as `/usr/share/sounds/sf2/default-GM.sf2 -> WINDOWS.sf2`), plus console logging (`[qddbconv] Synthesized MIDI via ...`) during conversion.
+  - Added cross-platform Windows & Linux discovery for `fluidsynth`/`timidity` binaries, `timidity.cfg` (`<timidity_dir>/timidity.cfg`, `<app_dir>/timidity.cfg`, `C:/timidity/timidity.cfg`, `/etc/timidity/timidity.cfg`), and default `.sf2` SoundFonts (`<app_dir>/soundfonts/*.sf2`, `<synth_dir>/soundfonts/*.sf2`, `C:/soundfonts/*.sf2`, `/usr/share/sounds/sf2/default-GM.sf2`, and `/usr/share/soundfonts/default.sf2`).
+
+---
+
+## [v1.2.3] - 2026-10-18
+
+### Fixed
+- **SMAF (`.mmf`) sequencer & hybrid MIDI+PCM synchronization (`src/smaf2mid.cpp`)**:
+  - **Mobile Standard (`MTR`, `formatType` 1/2) bank & stream-wave note mapping**: Tracked `CC#0 = 0x7D` (Drum/Stream bank) and `CC#0 = 0x7C` (Melody bank) across all 16 channels `0..15`, preserved Drum/Stream mode on channel 9 when `CC#0 = 0x00` is received, and mapped stream wave trigger notes directly (`notes 0..12 -> Mwa1..Mwa13`, `notes 13..91 -> GM percussion`, `notes 92..110 -> Mwa14..Mwa32`), fixing multi-wave `.mmf` tracks where stream phrases previously triggered the wrong `Mwa*` chunk.
+  - **HandyPhone Standard (`formatType` 0) Drum Mode & multi-track channel allocation**: Mapped channels with `Bank Select` bit 7 (`0x80`) to GM percussion note numbers selected by `Program Change` (`24..84`) on MIDI channel 9, and skipped MIDI channel 9 when assigning melodic channels across multi-track HPS `.mmf` files (`MTR1..MTR4`).
+  - **MA-3 / MA-5 stream SysEx controls**: Added support for per-wave Stream Panpot (`43 79 06 7F 0A` / `43 79 07 7F 0B`, modes `0`=explicit, `1`=center, `2`=follow channel `CC#10`), Stereo Wave Pair (`43 79 06 7F 09` / `43 79 07 7F 0A`, triggering paired Left/Right mono `Mwa*` waves simultaneously), and Master Volume (`43 79 06 7F 07` / `43 79 07 7F 00`).
+  - **`MspI` / `AspI` start/stop playback window (`st:` / `sp:`) & `FF 2F` End-of-Track clamping**: Parsed `MspI` and `AspI` chunks using fixed 8-byte `"st:"`/`"sp:"` and 12-byte `"Px:"` entry sizes, applied container-wide `st:` start offsets, clamped `Note-Off` and `Mwa*`/`Awa*` stream gate durations to the track stop point (`sp:` or `FF 2F`), and wrote the exact End-of-Track delta time in `convertMmfToMid`.
+  - **`ATR*` (`Atsq`) audio track parser & stream retrigger cutoff**: Added Huffman decompression (`(formatType & 0x0F) == 0x02`), `00 37 <vel>` stream velocity events, `FF 2F` stop handling, same-wave retrigger cutoff, removal of the `100 ms` minimum gate threshold on short stream triggers, and a `fluidsynth` synthesis fallback in `decodeMmfToWav`.
+
+---
+
 ## [v1.2.2] - 2026-10-17
 
 ### Added

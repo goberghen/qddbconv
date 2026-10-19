@@ -91,6 +91,21 @@ When the active \fBffmpeg\fR binary was compiled without \fB\-\-enable\-libopenm
 tracker modules (\fB.mod\fR, \fB.xm\fR, \fB.it\fR, \fB.s3m\fR, \fB.mptm\fR, etc.) and to
 \fBgme2wav\fR for console chiptunes (\fB.spc\fR, \fB.vgm\fR, \fB.vgz\fR, \fB.nsf\fR, \fB.gbs\fR,
 \fB.hes\fR, \fB.ay\fR, \fB.sap\fR, \fB.kss\fR).
+.TP
+.B MIDI & Yamaha SMAF Synthesizer Priority & SoundFont Selection
+For Standard MIDI (\fB.mid\fR, \fB.kar\fR, \fB.rmi\fR) and the musical score tracks (\fBMTR\fR/\fBMtsq\fR)
+of Yamaha SMAF (\fB.mmf\fR) files, \fBqddbconv\fR synthesizes MIDI events to 44.1 kHz stereo PCM
+before mixing any embedded SMAF ADPCM/PCM stream waves. By default (\fBAuto\fR mode), \fBfluidsynth\fR
+is tried first (requiring a valid \fB.sf2\fR/\fB.sf3\fR SoundFont) and \fBtimidity\fR is used as an
+automatic fallback. In \fBSettings \(-> Configure qddbconv...\fR,
+you can select the preferred synthesizer (\fBAuto: FluidSynth \(-> TiMidity++\fR,
+\fBTiMidity++ \(-> FluidSynth\fR, \fBFluidSynth only\fR, or \fBTiMidity++ only\fR), custom
+\fBfluidsynth\fR and \fBtimidity\fR binary paths, and an optional custom \fB.sf2\fR SoundFont file
+(passed to \fBfluidsynth\fR and loaded into \fBtimidity \-c\fR with prior bank/drumset mappings cleared).
+When no custom SoundFont is set, \fBqddbconv\fR checks portable application/synthesizer folders
+(\fI./soundfonts\fR, \fI./sf2\fR, \fI./tools\fR), \fI/usr/share/sounds/sf2/default-GM.sf2\fR,
+\fI/usr/share/soundfonts/default.sf2\fR, and \fIFluidR3_GM.sf2\fR for FluidSynth, and
+\fI/etc/timidity/timidity.cfg\fR (or \fIC:\\timidity\\timidity.cfg\fR on Windows) for TiMidity++.
 .SH TITLE FORMATTING
 The
 .B Output file name

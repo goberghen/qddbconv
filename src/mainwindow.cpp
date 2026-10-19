@@ -9,6 +9,7 @@
  */
 
 #include "mainwindow.h"
+#include "smaf2mid.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -1254,6 +1255,8 @@ void MainWindow::onEditTrackMetadata()
     addProp(tr("Sample Rate"), QStringLiteral("%1 Hz").arg(first.sampleRate));
     addProp(tr("Bits Per Sample"), QStringLiteral("%1-bit").arg(first.bitsPerSample));
     addProp(tr("Channels"), QString::number(first.channels));
+    if (SmafConverter::isSmafFile(first.sourcePath) || SmafConverter::isMidiFile(first.sourcePath))
+        addProp(tr("MIDI Synthesizer"), SmafConverter::describeActiveMidiSynth());
     if (QTableWidgetItem *outCell = m_table->item(rows.first(), 2))
         addProp(tr("Output Path Preview"), outCell->text());
 
@@ -1417,6 +1420,167 @@ void MainWindow::onOpenPreferences()
     pathsForm->addRow(tr("User presets directory:"), presetsDirRow);
     layout->addWidget(pathsGroup);
 
+    /* 2. MIDI & SMAF Synthesis Group */
+    QGroupBox *midiGroup = new QGroupBox(tr("MIDI && SMAF Synthesis"), &dlg);
+    QFormLayout *midiForm = new QFormLayout(midiGroup);
+    midiForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+
+    QComboBox *midiSynthCombo = new QComboBox(midiGroup);
+    midiSynthCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    midiSynthCombo->addItem(tr("Auto (FluidSynth -> TiMidity++ fallback)"), QStringLiteral("auto"));
+    midiSynthCombo->addItem(tr("TiMidity++ (with FluidSynth fallback)"), QStringLiteral("timidity_auto"));
+    midiSynthCombo->addItem(tr("FluidSynth only"), QStringLiteral("fluidsynth"));
+    midiSynthCombo->addItem(tr("TiMidity++ only"), QStringLiteral("timidity"));
+    QString curSynthMode = s.value(QStringLiteral("midiSynthMode"), QStringLiteral("auto")).toString();
+    if (curSynthMode == QLatin1String("fluidsynth_auto"))
+        curSynthMode = QStringLiteral("auto");
+    int synthIdx = midiSynthCombo->findData(curSynthMode);
+    midiSynthCombo->setCurrentIndex(synthIdx >= 0 ? synthIdx : 0);
+    midiSynthCombo->setToolTip(
+        tr("Select which software synthesizer renders Standard MIDI (.mid) and the\n"
+           "MIDI score tracks (MTR/Mtsq) of Yamaha SMAF (.mmf) files to audio.\n"
+           "Default: FluidSynth first, with automatic fallback to TiMidity++ if FluidSynth\n"
+           "or a .sf2 SoundFont is unavailable."));
+
+    QHBoxLayout *timidityBinRow = new QHBoxLayout();
+    QLineEdit *timidityBinEdit = new QLineEdit(
+        s.value(QStringLiteral("timidityPath"), QStringLiteral("timidity")).toString(), midiGroup);
+    timidityBinEdit->setPlaceholderText(QStringLiteral("timidity"));
+    timidityBinEdit->setToolTip(
+        tr("Path or command name for the TiMidity++ executable.\n"
+           "Leave as 'timidity' (or empty) to search the application folder and system PATH."));
+    QPushButton *browseTimidityBtn = new QPushButton(tr("Browse..."), midiGroup);
+    connect(browseTimidityBtn, &QPushButton::clicked, &dlg, [&dlg, timidityBinEdit]() {
+        QString startPath = timidityBinEdit->text().trimmed();
+        if (startPath.isEmpty() || !QFileInfo(startPath).isAbsolute())
+            startPath = QCoreApplication::applicationDirPath();
+#ifdef Q_OS_WIN
+        const QString filter = tr("Executables (*.exe);;All Files (*)");
+#else
+        const QString filter = tr("All Files (*)");
+#endif
+        QString file = QFileDialog::getOpenFileName(
+            &dlg, tr("Select TiMidity++ Executable"), startPath, filter);
+        if (!file.isEmpty())
+            timidityBinEdit->setText(file);
+    });
+    QPushButton *defaultTimidityBtn = new QPushButton(tr("Default"), midiGroup);
+    defaultTimidityBtn->setToolTip(tr("Reset to default ('timidity')"));
+    connect(defaultTimidityBtn, &QPushButton::clicked, &dlg, [timidityBinEdit]() {
+        timidityBinEdit->setText(QStringLiteral("timidity"));
+    });
+    timidityBinRow->addWidget(timidityBinEdit, 1);
+    timidityBinRow->addWidget(browseTimidityBtn);
+    timidityBinRow->addWidget(defaultTimidityBtn);
+
+    QHBoxLayout *fluidsynthBinRow = new QHBoxLayout();
+    QLineEdit *fluidsynthBinEdit = new QLineEdit(
+        s.value(QStringLiteral("fluidsynthPath"), QStringLiteral("fluidsynth")).toString(), midiGroup);
+    fluidsynthBinEdit->setPlaceholderText(QStringLiteral("fluidsynth"));
+    fluidsynthBinEdit->setToolTip(
+        tr("Path or command name for the FluidSynth executable.\n"
+           "Leave as 'fluidsynth' (or empty) to search the application folder and system PATH."));
+    QPushButton *browseFluidsynthBtn = new QPushButton(tr("Browse..."), midiGroup);
+    connect(browseFluidsynthBtn, &QPushButton::clicked, &dlg, [&dlg, fluidsynthBinEdit]() {
+        QString startPath = fluidsynthBinEdit->text().trimmed();
+        if (startPath.isEmpty() || !QFileInfo(startPath).isAbsolute())
+            startPath = QCoreApplication::applicationDirPath();
+#ifdef Q_OS_WIN
+        const QString filter = tr("Executables (*.exe);;All Files (*)");
+#else
+        const QString filter = tr("All Files (*)");
+#endif
+        QString file = QFileDialog::getOpenFileName(
+            &dlg, tr("Select FluidSynth Executable"), startPath, filter);
+        if (!file.isEmpty())
+            fluidsynthBinEdit->setText(file);
+    });
+    QPushButton *defaultFluidsynthBtn = new QPushButton(tr("Default"), midiGroup);
+    defaultFluidsynthBtn->setToolTip(tr("Reset to default ('fluidsynth')"));
+    connect(defaultFluidsynthBtn, &QPushButton::clicked, &dlg, [fluidsynthBinEdit]() {
+        fluidsynthBinEdit->setText(QStringLiteral("fluidsynth"));
+    });
+    fluidsynthBinRow->addWidget(fluidsynthBinEdit, 1);
+    fluidsynthBinRow->addWidget(browseFluidsynthBtn);
+    fluidsynthBinRow->addWidget(defaultFluidsynthBtn);
+
+    QHBoxLayout *sf2Row = new QHBoxLayout();
+    QLineEdit *sf2Edit = new QLineEdit(
+        s.value(QStringLiteral("midiSoundFontPath")).toString(), midiGroup);
+#ifdef Q_OS_WIN
+    sf2Edit->setPlaceholderText(tr("System default (./default.sf2, ./soundfonts/*.sf2, or timidity.cfg)"));
+#else
+    sf2Edit->setPlaceholderText(tr("System default (/usr/share/sounds/sf2/default-GM.sf2 or timidity.cfg)"));
+#endif
+    sf2Edit->setToolTip(
+        tr("Optional path to a custom SoundFont (.sf2) file used by FluidSynth and TiMidity++.\n"
+           "Leave empty to use the system default SoundFont / timidity.cfg configuration."));
+    QPushButton *browseSf2Btn = new QPushButton(tr("Browse..."), midiGroup);
+    connect(browseSf2Btn, &QPushButton::clicked, &dlg, [&dlg, sf2Edit]() {
+        QString startPath = sf2Edit->text().trimmed();
+        if (startPath.isEmpty()) {
+            const QString appDir = QCoreApplication::applicationDirPath();
+#ifdef Q_OS_WIN
+            if (!appDir.isEmpty() && QFileInfo::exists(appDir + QLatin1String("/soundfonts")))
+                startPath = appDir + QLatin1String("/soundfonts");
+            else if (QFileInfo::exists(QStringLiteral("C:/soundfonts")))
+                startPath = QStringLiteral("C:/soundfonts");
+            else if (QFileInfo::exists(QStringLiteral("C:/timidity")))
+                startPath = QStringLiteral("C:/timidity");
+            else if (!appDir.isEmpty())
+                startPath = appDir;
+            else
+                startPath = QDir::homePath();
+#else
+            if (QFileInfo::exists(QStringLiteral("/usr/share/sounds/sf2")))
+                startPath = QStringLiteral("/usr/share/sounds/sf2");
+            else if (QFileInfo::exists(QStringLiteral("/usr/share/soundfonts")))
+                startPath = QStringLiteral("/usr/share/soundfonts");
+            else
+                startPath = QDir::homePath();
+#endif
+        }
+        QString file = QFileDialog::getOpenFileName(
+            &dlg,
+            tr("Select SoundFont (.sf2) File"),
+            startPath,
+            tr("SoundFont Files (*.sf2 *.SF2 *.sf3 *.SF3);;All Files (*)"));
+        if (!file.isEmpty())
+            sf2Edit->setText(file);
+    });
+    QPushButton *defaultSf2Btn = new QPushButton(tr("Default"), midiGroup);
+    defaultSf2Btn->setToolTip(tr("Clear custom SoundFont override and use system default"));
+    connect(defaultSf2Btn, &QPushButton::clicked, &dlg, [sf2Edit]() {
+        sf2Edit->clear();
+    });
+    sf2Row->addWidget(sf2Edit, 1);
+    sf2Row->addWidget(browseSf2Btn);
+    sf2Row->addWidget(defaultSf2Btn);
+
+    QLabel *activeSynthLabel = new QLabel(midiGroup);
+    activeSynthLabel->setWordWrap(true);
+    activeSynthLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto updateActiveSynthStatus = [midiSynthCombo, timidityBinEdit, fluidsynthBinEdit, sf2Edit, activeSynthLabel]() {
+        const QString mode = midiSynthCombo->currentData().toString();
+        const QString sf2 = sf2Edit->text().trimmed();
+        const QString timBin = timidityBinEdit->text().trimmed();
+        const QString fsBin = fluidsynthBinEdit->text().trimmed();
+        activeSynthLabel->setText(
+            SmafConverter::describeActiveMidiSynth(mode, sf2, true, timBin, fsBin));
+    };
+    updateActiveSynthStatus();
+    connect(midiSynthCombo, &QComboBox::currentIndexChanged, &dlg, updateActiveSynthStatus);
+    connect(timidityBinEdit, &QLineEdit::textChanged, &dlg, updateActiveSynthStatus);
+    connect(fluidsynthBinEdit, &QLineEdit::textChanged, &dlg, updateActiveSynthStatus);
+    connect(sf2Edit, &QLineEdit::textChanged, &dlg, updateActiveSynthStatus);
+
+    midiForm->addRow(tr("Preferred synthesizer:"), midiSynthCombo);
+    midiForm->addRow(tr("FluidSynth binary:"), fluidsynthBinRow);
+    midiForm->addRow(tr("TiMidity++ binary:"), timidityBinRow);
+    midiForm->addRow(tr("SoundFont (.sf2) file:"), sf2Row);
+    midiForm->addRow(tr("Active backend:"), activeSynthLabel);
+    layout->addWidget(midiGroup);
+
     /* 2. Cover Art & File Copy Group */
     QGroupBox *coverCopyGroup = new QGroupBox(tr("Cover Art && File Copy"), &dlg);
     QVBoxLayout *coverCopyLayout = new QVBoxLayout(coverCopyGroup);
@@ -1470,6 +1634,22 @@ void MainWindow::onOpenPreferences()
             s.remove(QStringLiteral("presetsDir"));
         else
             s.setValue(QStringLiteral("presetsDir"), newPresetsDir);
+        s.setValue(QStringLiteral("midiSynthMode"), midiSynthCombo->currentData().toString());
+        const QString newTimBin = timidityBinEdit->text().trimmed();
+        if (newTimBin.isEmpty() || newTimBin == QLatin1String("timidity"))
+            s.remove(QStringLiteral("timidityPath"));
+        else
+            s.setValue(QStringLiteral("timidityPath"), newTimBin);
+        const QString newFsBin = fluidsynthBinEdit->text().trimmed();
+        if (newFsBin.isEmpty() || newFsBin == QLatin1String("fluidsynth"))
+            s.remove(QStringLiteral("fluidsynthPath"));
+        else
+            s.setValue(QStringLiteral("fluidsynthPath"), newFsBin);
+        const QString newSf2 = sf2Edit->text().trimmed();
+        if (newSf2.isEmpty())
+            s.remove(QStringLiteral("midiSoundFontPath"));
+        else
+            s.setValue(QStringLiteral("midiSoundFontPath"), newSf2);
         m_resizeCoverArt = resizeCoverCheck->isChecked();
         m_maxCoverSizePx = maxCoverSpin->value();
         m_retagAfterCopy = retagAfterCopyCheck->isChecked();

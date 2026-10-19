@@ -49,6 +49,13 @@ public:
                                const QString &wavPath,
                                int sampleRate,
                                QString &errorMsg);
+
+    /* Returns a human-readable summary of the active MIDI synthesizer binary and SoundFont/config */
+    static QString describeActiveMidiSynth(const QString &synthModeOverride = QString(),
+                                           const QString &soundFontOverride = QString(),
+                                           bool useOverrides = false,
+                                           const QString &timidityBinOverride = QString(),
+                                           const QString &fluidsynthBinOverride = QString());
 };
 
 #endif /* QDDBCONV_SMAF2MID_H */

@@ -18,26 +18,55 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
+#include <QSettings>
+#include <QStandardPaths>
 #include <QTemporaryFile>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <vector>
 
 namespace {
 
-static QString resolveSynthToolBin(const QString &name)
+static QString resolveSynthToolBin(const QString &name,
+                                   const QString &customBinOverride = QString(),
+                                   bool useOverrides = false)
 {
+    QString configured;
+    if (useOverrides) {
+        configured = customBinOverride.trimmed();
+    } else if (!customBinOverride.trimmed().isEmpty()) {
+        configured = customBinOverride.trimmed();
+    } else {
+        QSettings s(QStringLiteral("qddbconv"), QStringLiteral("qddbconv"));
+        const QString key = (name == QLatin1String("timidity"))
+            ? QStringLiteral("timidityPath")
+            : QStringLiteral("fluidsynthPath");
+        configured = s.value(key, name).toString().trimmed();
+    }
+
+    if (!configured.isEmpty() &&
+        configured.compare(name, Qt::CaseInsensitive) != 0 &&
+        configured.compare(name + QLatin1String(".exe"), Qt::CaseInsensitive) != 0) {
+        return configured;
+    }
+
     const QString appDir = QCoreApplication::applicationDirPath();
     if (!appDir.isEmpty()) {
-        const QStringList subDirs = { appDir, appDir + QLatin1String("/tools") };
+        const QStringList subDirs = {
+            appDir,
+            appDir + QLatin1String("/tools"),
+            appDir + QLatin1String("/bin")
+        };
         for (const QString &dir : subDirs) {
 #ifdef Q_OS_WIN
             QString candExe = dir + QLatin1Char('/') + name + QLatin1String(".exe");
@@ -49,7 +78,26 @@ static QString resolveSynthToolBin(const QString &name)
                 return cand;
         }
     }
-    return name;
+
+#ifdef Q_OS_WIN
+    QStringList winCandidates;
+    if (name == QLatin1String("timidity")) {
+        winCandidates << QStringLiteral("C:/timidity/timidity.exe")
+                      << QStringLiteral("C:/TiMidity++/timidity.exe")
+                      << QStringLiteral("C:/Program Files/TiMidity++/timidity.exe")
+                      << QStringLiteral("C:/Program Files (x86)/TiMidity++/timidity.exe");
+    } else if (name == QLatin1String("fluidsynth")) {
+        winCandidates << QStringLiteral("C:/fluidsynth/bin/fluidsynth.exe")
+                      << QStringLiteral("C:/Program Files/FluidSynth/bin/fluidsynth.exe")
+                      << QStringLiteral("C:/Program Files (x86)/FluidSynth/bin/fluidsynth.exe");
+    }
+    for (const QString &cand : winCandidates) {
+        if (QFileInfo::exists(cand))
+            return cand;
+    }
+#endif
+
+    return configured.isEmpty() ? name : configured;
 }
 
 inline uint32_t readBe32(const uint8_t *p)
@@ -274,6 +322,7 @@ struct SmafWaveTrigger {
     uint8_t velocity = 100;
     uint8_t volume = 100;
     uint8_t expression = 127;
+    uint8_t masterVolume = 127;
     uint8_t pan = 64;
 };
 
@@ -286,6 +335,13 @@ struct SmafScoreTrack {
     int gateTimeBase = 2;
     uint8_t atrWaveType0 = 0;
     uint8_t atrWaveType1 = 0;
+    bool hasStartPoint = false;
+    bool hasStopPoint = false;
+    uint32_t startPointOffset = 0;
+    uint32_t stopPointOffset = 0;
+    uint64_t parsedStartMs = 0;
+    uint64_t parsedStopMs = 0;
+    bool hasParsedStopMs = false;
     std::vector<uint8_t> channelStatus;
     std::vector<uint8_t> setupData;
     std::vector<uint8_t> sequenceData;
@@ -428,25 +484,71 @@ static void parseWaveSubchunks(const uint8_t *p, size_t n, SmafScoreTrack &trk)
     }
 }
 
-static void decodeAtrAudioTrack(const SmafScoreTrack &t,
+static void parseSeekPhraseInfoChunk(const uint8_t *p, size_t n, SmafScoreTrack &trk)
+{
+    /* Seek & Phrase Info chunk (MspI inside MTR* / AspI inside ATR*):
+     *   "st:" + 4-byte BE sequence byte offset + ',' (8 bytes)
+     *   "sp:" + 4-byte BE sequence byte offset + ',' (8 bytes)
+     *   "Px:" + 4-byte BE start offset + 4-byte BE stop offset + ',' (12 bytes) */
+    size_t pos = 0;
+    while (pos + 7 <= n) {
+        if (p[pos] == 's' && p[pos + 1] == 't' && p[pos + 2] == ':') {
+            trk.hasStartPoint = true;
+            trk.startPointOffset = readBe32(p + pos + 3);
+            pos += (pos + 8 <= n && p[pos + 7] == ',') ? 8 : 7;
+        } else if (p[pos] == 's' && p[pos + 1] == 'p' && p[pos + 2] == ':') {
+            trk.hasStopPoint = true;
+            trk.stopPointOffset = readBe32(p + pos + 3);
+            pos += (pos + 8 <= n && p[pos + 7] == ',') ? 8 : 7;
+        } else if (p[pos] == 'P' && p[pos + 2] == ':' && pos + 11 <= n) {
+            pos += (pos + 12 <= n && p[pos + 11] == ',') ? 12 : 11;
+        } else {
+            ++pos;
+        }
+    }
+}
+
+static void decodeAtrAudioTrack(SmafScoreTrack &t,
                                 size_t trackIdx,
                                 std::vector<SmafWaveTrigger> &waveTriggers)
 {
     if (t.sequenceData.empty() || t.waves.empty())
         return;
 
-    const uint8_t *p = t.sequenceData.data();
-    const uint8_t *end = p + t.sequenceData.size();
+    std::vector<uint8_t> inflated;
+    const uint8_t *seqStart = t.sequenceData.data();
+    size_t seqLen = t.sequenceData.size();
+    if ((t.formatType & 0x0F) == 0x02) {
+        inflated = inflateSmafHuffman(seqStart, seqLen);
+        if (inflated.empty())
+            return;
+        seqStart = inflated.data();
+        seqLen = inflated.size();
+    }
+
+    const uint8_t *p = seqStart;
+    const uint8_t *end = seqStart + seqLen;
     const double tbD = smafTimeBaseMs(t.durationTimeBase);
     const double tbG = smafTimeBaseMs(t.gateTimeBase);
 
+    uint8_t atrVel = 127;
     uint8_t chVol[4] = {100, 100, 100, 100};
     uint8_t chExp[4] = {127, 127, 127, 127};
     uint8_t chPan[4] = {64, 64, 64, 64};
 
+    size_t firstTrigIdx = waveTriggers.size();
     double curMs = 0.0;
     int guard = 0;
     while (p < end && guard++ < 1000000) {
+        size_t eventOffset = static_cast<size_t>(p - seqStart);
+        if (t.hasStartPoint && eventOffset == t.startPointOffset)
+            t.parsedStartMs = static_cast<uint64_t>(std::llround(curMs));
+        if (t.hasStopPoint && eventOffset >= t.stopPointOffset) {
+            t.parsedStopMs = static_cast<uint64_t>(std::llround(curMs));
+            t.hasParsedStopMs = true;
+            break;
+        }
+
         uint32_t dur = readHpsVarLen(p, end);
         curMs += dur * tbD;
         if (p >= end)
@@ -461,8 +563,17 @@ static void decodeAtrAudioTrack(const SmafScoreTrack &t,
             uint8_t e2 = *p++;
             if (e2 == 0x00)
                 continue;
+            if (e2 == 0x2F) {
+                if (p < end && *p == 0x00)
+                    ++p;
+                t.parsedStopMs = tick;
+                t.hasParsedStopMs = true;
+                break;
+            }
             if (e2 == 0xF0) {
-                uint32_t len = readHpsVarLen(p, end);
+                if (p >= end)
+                    break;
+                uint8_t len = *p++;
                 p += std::min<size_t>(len, static_cast<size_t>(end - p));
                 continue;
             }
@@ -481,8 +592,11 @@ static void decodeAtrAudioTrack(const SmafScoreTrack &t,
                 if (p >= end)
                     break;
                 uint8_t e3 = *p++;
-                if (e3 == 0x00)
+                if (e3 == 0x00) {
+                    t.parsedStopMs = tick;
+                    t.hasParsedStopMs = true;
                     break;
+                }
                 continue;
             }
             int localCh = (e2 >> 6) & 3;
@@ -492,23 +606,29 @@ static void decodeAtrAudioTrack(const SmafScoreTrack &t,
                 if (p >= end)
                     break;
                 uint8_t v = *p++;
-                if (data == 0x7)
+                if (e2 == 0x37) {
+                    /* ATR stream velocity (00 37 <vel>) */
+                    atrVel = v & 0x7F;
+                } else if (data == 0x7) {
                     chVol[localCh] = v & 0x7F;
-                else if (data == 0xA)
+                } else if (data == 0xA) {
                     chPan[localCh] = v & 0x7F;
-                else if (data == 0xB)
+                } else if (data == 0xB) {
                     chExp[localCh] = v & 0x7F;
+                }
             } else if (cls == 0) {
                 chExp[localCh] = static_cast<uint8_t>((data <= 1) ? 0 : std::min(127, data * 8 + 15));
             }
             continue;
         }
 
-        /* Atsq WaveMessage: bits 7..6 = channel, bits 5..0 = waveNumber (1..63) */
+        /* Atsq WaveMessage: read gate-time VLQ; bits 7..6 == 0 triggers Awa[bits 5..0] (1..62) */
         int localCh = (e1 >> 6) & 3;
         int waveNum = e1 & 0x3F;
         uint32_t gate = readHpsVarLen(p, end);
-        if (gate == 0 || waveNum <= 0)
+        if (gate == 0 || (e1 & 0xC0) != 0 || waveNum <= 0 || waveNum > 62)
+            continue;
+        if (t.hasStartPoint && eventOffset < t.startPointOffset)
             continue;
 
         SmafWaveTrigger trig;
@@ -517,26 +637,44 @@ static void decodeAtrAudioTrack(const SmafScoreTrack &t,
         trig.trackIdx = trackIdx;
         trig.waveNumber = waveNum;
         trig.pitchSemitones = 0;
-        trig.velocity = 100;
+        trig.velocity = atrVel;
         trig.volume = chVol[localCh];
         trig.expression = chExp[localCh];
         trig.pan = chPan[localCh];
         waveTriggers.push_back(trig);
     }
+
+    if (!t.hasParsedStopMs) {
+        t.parsedStopMs = static_cast<uint64_t>(std::llround(curMs));
+        t.hasParsedStopMs = true;
+    }
+
+    /* Clamp any ATR wave trigger extending past track stop point */
+    for (size_t i = firstTrigIdx; i < waveTriggers.size(); ++i) {
+        SmafWaveTrigger &trig = waveTriggers[i];
+        if (trig.startMs >= t.parsedStopMs) {
+            trig.durationMs = 0;
+        } else if (trig.startMs + trig.durationMs > t.parsedStopMs) {
+            trig.durationMs = t.parsedStopMs - trig.startMs;
+        }
+    }
 }
 
-static void decodeHandyPhoneTrackToMidi(const SmafScoreTrack &t,
+static void decodeHandyPhoneTrackToMidi(SmafScoreTrack &t,
                                         size_t trackIdx,
                                         int baseCh,
                                         std::vector<MidiTimedEvent> &events,
                                         std::vector<SmafWaveTrigger> &waveTriggers)
 {
-    const uint8_t *p = t.sequenceData.data();
-    const uint8_t *end = p + t.sequenceData.size();
+    const uint8_t *seqStart = t.sequenceData.data();
+    const uint8_t *p = seqStart;
+    const uint8_t *end = seqStart + t.sequenceData.size();
     const double tbD = smafTimeBaseMs(t.durationTimeBase);
     const double tbG = smafTimeBaseMs(t.gateTimeBase);
 
     bool isDrum[4] = {false, false, false, false};
+    uint8_t chBank[4] = {0, 0, 0, 0};
+    uint8_t chProg[4] = {0, 0, 0, 0};
     int octaveShiftSemis[4] = {0, 0, 0, 0};
     uint8_t chVol[4] = {100, 100, 100, 100};
     uint8_t chExp[4] = {127, 127, 127, 127};
@@ -544,20 +682,36 @@ static void decodeHandyPhoneTrackToMidi(const SmafScoreTrack &t,
 
     for (int i = 0; i < 4 && (i / 2) < static_cast<int>(t.channelStatus.size()); ++i) {
         uint8_t nib = (i % 2 == 0) ? (t.channelStatus[i / 2] >> 4) : (t.channelStatus[i / 2] & 0x0F);
-        if ((nib & 0x03) == 3)
+        if ((nib & 0x03) == 3) {
             isDrum[i] = true;
+            chBank[i] = 0x80;
+        }
     }
 
     auto mapMidiCh = [&](int localCh) -> uint8_t {
-        if (isDrum[localCh & 3])
+        int c = localCh & 3;
+        if (isDrum[c] || (chBank[c] & 0x80) != 0)
             return 9; /* Standard MIDI Channel 10 for percussion */
-        int ch = (baseCh + (localCh & 3)) & 0x0F;
-        return static_cast<uint8_t>(ch == 9 ? 15 : ch);
+        int ch = baseCh + c;
+        if (ch >= 9)
+            ++ch; /* Skip MIDI channel 9 (reserved for GM percussion) */
+        return static_cast<uint8_t>(ch & 0x0F);
     };
 
+    size_t firstEventIdx = events.size();
+    size_t firstTrigIdx = waveTriggers.size();
     double curMs = 0.0;
     int guard = 0;
     while (p < end && guard++ < 1000000 && events.size() < 400000) {
+        size_t eventOffset = static_cast<size_t>(p - seqStart);
+        if (t.hasStartPoint && eventOffset == t.startPointOffset)
+            t.parsedStartMs = static_cast<uint64_t>(std::llround(curMs));
+        if (t.hasStopPoint && eventOffset >= t.stopPointOffset) {
+            t.parsedStopMs = static_cast<uint64_t>(std::llround(curMs));
+            t.hasParsedStopMs = true;
+            break;
+        }
+
         uint32_t dur = readHpsVarLen(p, end);
         curMs += dur * tbD;
         if (p >= end)
@@ -572,6 +726,13 @@ static void decodeHandyPhoneTrackToMidi(const SmafScoreTrack &t,
             uint8_t e2 = *p++;
             if (e2 == 0x00)
                 continue;
+            if (e2 == 0x2F) {
+                if (p < end && *p == 0x00)
+                    ++p;
+                t.parsedStopMs = tick;
+                t.hasParsedStopMs = true;
+                break;
+            }
             if (e2 == 0xF0) {
                 uint32_t len = readHpsVarLen(p, end);
                 if (len > static_cast<size_t>(end - p))
@@ -594,8 +755,11 @@ static void decodeHandyPhoneTrackToMidi(const SmafScoreTrack &t,
                 if (p >= end)
                     break;
                 uint8_t e3 = *p++;
-                if (e3 == 0x00)
+                if (e3 == 0x00) {
+                    t.parsedStopMs = tick;
+                    t.hasParsedStopMs = true;
                     break; /* End of sequence */
+                }
                 continue;
             }
 
@@ -610,13 +774,24 @@ static void decodeHandyPhoneTrackToMidi(const SmafScoreTrack &t,
                 uint8_t v = *p++;
                 switch (data) {
                 case 0x0: { /* Program Change */
-                    uint8_t outProg = (mch == 9) ? 0 : static_cast<uint8_t>(v & 0x7F);
-                    events.push_back({tick, 0, static_cast<uint8_t>(0xC0 | mch), outProg, 0, 2});
+                    chProg[localCh] = v & 0x7F;
+                    if (mch == 9) {
+                        /* In HPS Drum mode (chBank & 0x80), Program Change selects the GM
+                         * percussion note number (24..84) for this channel; keep Drum Kit 0 on ch 9. */
+                        events.push_back({tick, 0, static_cast<uint8_t>(0xC0 | mch), 0, 0, 2});
+                    } else {
+                        events.push_back({tick, 0, static_cast<uint8_t>(0xC0 | mch), chProg[localCh], 0, 2});
+                    }
                     break;
                 }
-                case 0x1: /* Bank Select (bit 7 indicates drum bank) */
-                    if (v & 0x80)
+                case 0x1: /* Bank Select (bit 7 indicates drum bank 0x80) */
+                    if (v & 0x80) {
+                        chBank[localCh] = 0x80;
                         isDrum[localCh] = true;
+                    } else {
+                        chBank[localCh] = v & 0x7F;
+                        isDrum[localCh] = false;
+                    }
                     mch = mapMidiCh(localCh);
                     if (mch != 9) {
                         events.push_back({tick, 0, static_cast<uint8_t>(0xB0 | mch), 0, 0, 3});
@@ -674,11 +849,13 @@ static void decodeHandyPhoneTrackToMidi(const SmafScoreTrack &t,
         uint32_t gate = readHpsVarLen(p, end);
         if (gate == 0)
             continue;
+        if (t.hasStartPoint && eventOffset < t.startPointOffset)
+            continue;
 
         uint64_t gateMs = static_cast<uint64_t>(std::max(1.0, std::round(gate * tbG)));
 
         /* If HandyPhone MTR track carries embedded Mwa/Awa waves and triggers low wave index on drum/stream ch */
-        if (!t.waves.empty() && isDrum[localCh] && octave == 0 && noteNib > 0) {
+        if (!t.waves.empty() && (isDrum[localCh] || (chBank[localCh] & 0x80) != 0) && octave == 0 && noteNib > 0) {
             bool hasMatchingWave = false;
             for (const SmafWaveChunk &w : t.waves) {
                 if (w.waveNumber == noteNib) {
@@ -703,12 +880,445 @@ static void decodeHandyPhoneTrackToMidi(const SmafScoreTrack &t,
         }
 
         uint8_t mch = mapMidiCh(localCh);
-        int midiNote = std::clamp(noteNib + octave * 12 + 36 + octaveShiftSemis[localCh], 0, 127);
+        int midiNote = 0;
+        if ((chBank[localCh] & 0x80) != 0 || isDrum[localCh]) {
+            /* In HandyPhone Standard Drum Mode, Program Change (24..84) specifies the GM percussion note */
+            if (chProg[localCh] >= 24 && chProg[localCh] <= 84)
+                midiNote = chProg[localCh];
+            else
+                midiNote = std::clamp(noteNib + octave * 12 + 36 + octaveShiftSemis[localCh], 24, 84);
+        } else {
+            midiNote = std::clamp(noteNib + octave * 12 + 36 + octaveShiftSemis[localCh], 0, 127);
+        }
         uint64_t offTick = tick + gateMs;
 
         events.push_back({tick,    2, static_cast<uint8_t>(0x90 | mch), static_cast<uint8_t>(midiNote), 100, 3});
         events.push_back({offTick, 1, static_cast<uint8_t>(0x80 | mch), static_cast<uint8_t>(midiNote), 0,   3});
     }
+
+    if (!t.hasParsedStopMs) {
+        t.parsedStopMs = static_cast<uint64_t>(std::llround(curMs));
+        t.hasParsedStopMs = true;
+    }
+
+    /* Clamp Note-Off and wave trigger durations to the track stop point */
+    for (size_t i = firstEventIdx; i < events.size(); ++i) {
+        if (events[i].tickMs > t.parsedStopMs)
+            events[i].tickMs = t.parsedStopMs;
+    }
+    for (size_t i = firstTrigIdx; i < waveTriggers.size(); ++i) {
+        SmafWaveTrigger &trig = waveTriggers[i];
+        if (trig.startMs >= t.parsedStopMs)
+            trig.durationMs = 0;
+        else if (trig.startMs + trig.durationMs > t.parsedStopMs)
+            trig.durationMs = t.parsedStopMs - trig.startMs;
+    }
+}
+
+static QString locateSynthExecutable(const QString &name,
+                                     const QString &customBinOverride = QString(),
+                                     bool useOverrides = false)
+{
+    const QString candidate = resolveSynthToolBin(name, customBinOverride, useOverrides);
+    if (candidate.contains(QLatin1Char('/')) ||
+        candidate.contains(QLatin1Char('\\')) ||
+        QFileInfo(candidate).isAbsolute()) {
+        return QFileInfo::exists(candidate) ? QFileInfo(candidate).absoluteFilePath() : QString();
+    }
+    return QStandardPaths::findExecutable(candidate);
+}
+
+static QStringList timidityConfigCandidates(const QString &timidityBinOverride = QString(),
+                                            bool useOverrides = false)
+{
+    QStringList cfgCandidates;
+    const QString timidityExe = locateSynthExecutable(QStringLiteral("timidity"), timidityBinOverride, useOverrides);
+    if (!timidityExe.isEmpty()) {
+        const QString exeDir = QFileInfo(timidityExe).absolutePath();
+        cfgCandidates << exeDir + QLatin1String("/timidity.cfg")
+                      << QDir::cleanPath(exeDir + QLatin1String("/../timidity.cfg"));
+    }
+
+    const QString appDir = QCoreApplication::applicationDirPath();
+    if (!appDir.isEmpty()) {
+        cfgCandidates << appDir + QLatin1String("/timidity.cfg")
+                      << appDir + QLatin1String("/tools/timidity.cfg");
+    }
+
+    cfgCandidates << QDir::homePath() + QLatin1String("/.timidity.cfg")
+                  << QDir::homePath() + QLatin1String("/timidity.cfg");
+
+#ifdef Q_OS_WIN
+    cfgCandidates << QStringLiteral("C:/timidity/timidity.cfg")
+                  << QStringLiteral("C:/TiMidity++/timidity.cfg")
+                  << QStringLiteral("C:/Windows/timidity.cfg");
+#else
+    cfgCandidates << QStringLiteral("/etc/timidity/timidity.cfg")
+                  << QStringLiteral("/etc/timidity.cfg")
+                  << QStringLiteral("/usr/local/share/timidity/timidity.cfg")
+                  << QStringLiteral("/usr/share/timidity/timidity.cfg");
+#endif
+    cfgCandidates.removeDuplicates();
+    return cfgCandidates;
+}
+
+static QString findDefaultSoundFont(const QString &timidityBinOverride = QString(),
+                                    const QString &fluidsynthBinOverride = QString(),
+                                    bool useOverrides = false)
+{
+    QStringList searchDirs;
+    const QString appDir = QCoreApplication::applicationDirPath();
+    if (!appDir.isEmpty()) {
+        searchDirs << appDir
+                   << appDir + QLatin1String("/soundfonts")
+                   << appDir + QLatin1String("/sf2")
+                   << appDir + QLatin1String("/tools")
+                   << appDir + QLatin1String("/tools/soundfonts");
+    }
+
+    const QString fsExe = locateSynthExecutable(QStringLiteral("fluidsynth"), fluidsynthBinOverride, useOverrides);
+    if (!fsExe.isEmpty()) {
+        const QString fsDir = QFileInfo(fsExe).absolutePath();
+        searchDirs << fsDir
+                   << fsDir + QLatin1String("/soundfonts")
+                   << QDir::cleanPath(fsDir + QLatin1String("/../sf2"))
+                   << QDir::cleanPath(fsDir + QLatin1String("/../share/soundfonts"))
+                   << QDir::cleanPath(fsDir + QLatin1String("/../share/sounds/sf2"));
+    }
+
+    const QString timExe = locateSynthExecutable(QStringLiteral("timidity"), timidityBinOverride, useOverrides);
+    if (!timExe.isEmpty()) {
+        const QString timDir = QFileInfo(timExe).absolutePath();
+        searchDirs << timDir
+                   << timDir + QLatin1String("/soundfonts")
+                   << timDir + QLatin1String("/sf2");
+    }
+
+#ifdef Q_OS_WIN
+    searchDirs << QStringLiteral("C:/soundfonts")
+               << QStringLiteral("C:/timidity/soundfonts")
+               << QStringLiteral("C:/TiMidity++/soundfonts")
+               << QStringLiteral("C:/timidity")
+               << QStringLiteral("C:/TiMidity++");
+#else
+    /* Prefer distribution-managed default symlinks (e.g. Debian/Ubuntu update-alternatives
+     * /usr/share/sounds/sf2/default-GM.sf2 or Arch/Fedora /usr/share/soundfonts/default.sf2)
+     * before specific hardcoded SoundFont filenames. */
+    const QStringList sysDefaults = {
+        QStringLiteral("/usr/share/sounds/sf2/default-GM.sf2"),
+        QStringLiteral("/usr/share/soundfonts/default.sf2"),
+        QStringLiteral("/usr/share/sounds/sf2/FluidR3_GM.sf2"),
+        QStringLiteral("/usr/share/soundfonts/FluidR3_GM.sf2"),
+        QStringLiteral("/usr/share/sounds/sf2/TimGM6mb.sf2")
+    };
+#endif
+
+    searchDirs.removeDuplicates();
+    const QStringList preferredNames = {
+        QStringLiteral("default.sf2"),
+        QStringLiteral("default-GM.sf2"),
+        QStringLiteral("soundfont.sf2"),
+        QStringLiteral("FluidR3_GM.sf2"),
+        QStringLiteral("GeneralUser_GS.sf2"),
+        QStringLiteral("TimGM6mb.sf2"),
+        QStringLiteral("WINDOWS.sf2")
+    };
+
+    for (const QString &dirPath : searchDirs) {
+        for (const QString &sfName : preferredNames) {
+            const QString cand = dirPath + QLatin1Char('/') + sfName;
+            if (QFileInfo::exists(cand))
+                return cand;
+        }
+        QDir d(dirPath);
+        if (d.exists()) {
+            const QFileInfoList sfFiles = d.entryInfoList(
+                {QStringLiteral("*.sf2"), QStringLiteral("*.SF2"),
+                 QStringLiteral("*.sf3"), QStringLiteral("*.SF3")},
+                QDir::Files, QDir::Name);
+            if (!sfFiles.isEmpty())
+                return sfFiles.first().absoluteFilePath();
+        }
+    }
+
+#ifndef Q_OS_WIN
+    for (const QString &c : sysDefaults) {
+        if (QFileInfo::exists(c))
+            return c;
+    }
+    for (const QString &sysDir : {QStringLiteral("/usr/share/sounds/sf2"), QStringLiteral("/usr/share/soundfonts")}) {
+        QDir d(sysDir);
+        if (d.exists()) {
+            const QFileInfoList sfFiles = d.entryInfoList(
+                {QStringLiteral("*.sf2"), QStringLiteral("*.SF2"),
+                 QStringLiteral("*.sf3"), QStringLiteral("*.SF3")},
+                QDir::Files, QDir::Name);
+            if (!sfFiles.isEmpty())
+                return sfFiles.first().absoluteFilePath();
+        }
+    }
+#endif
+    return QString();
+}
+
+static QString configuredMidiSynthMode(const QString &overrideMode = QString(),
+                                       bool useOverrides = false)
+{
+    QString mode = overrideMode.trimmed().toLower();
+    if (!useOverrides && mode.isEmpty()) {
+        QSettings s(QStringLiteral("qddbconv"), QStringLiteral("qddbconv"));
+        mode = s.value(QStringLiteral("midiSynthMode"), QStringLiteral("auto")).toString().trimmed().toLower();
+    }
+    if (mode == QLatin1String("fluidsynth_auto"))
+        return QStringLiteral("auto");
+    if (mode != QLatin1String("timidity_auto") &&
+        mode != QLatin1String("timidity") &&
+        mode != QLatin1String("fluidsynth")) {
+        return QStringLiteral("auto");
+    }
+    return mode;
+}
+
+static QString configuredMidiSoundFontPath(const QString &overridePath = QString(),
+                                           bool useOverrides = false)
+{
+    if (useOverrides)
+        return overridePath.trimmed();
+    QString path = overridePath.trimmed();
+    if (path.isEmpty()) {
+        QSettings s(QStringLiteral("qddbconv"), QStringLiteral("qddbconv"));
+        path = s.value(QStringLiteral("midiSoundFontPath")).toString().trimmed();
+    }
+    return path;
+}
+
+static QString formatSoundFontDisplay(const QString &sf2Path)
+{
+    if (sf2Path.isEmpty())
+        return QStringLiteral("system default");
+    QFileInfo fi(sf2Path);
+    if (!fi.exists())
+        return QStringLiteral("%1 (not found)").arg(sf2Path);
+    QString canon = fi.canonicalFilePath();
+    if (!canon.isEmpty() && canon != fi.absoluteFilePath())
+        return QStringLiteral("%1 -> %2").arg(sf2Path, QFileInfo(canon).fileName());
+    return sf2Path;
+}
+
+static QString findExistingTimidityConfig(const QString &timidityBinOverride = QString(),
+                                          bool useOverrides = false)
+{
+    for (const QString &cfgPath : timidityConfigCandidates(timidityBinOverride, useOverrides)) {
+        if (QFileInfo::exists(cfgPath))
+            return cfgPath;
+    }
+    return QString();
+}
+
+static QString inspectTimidityConfigSummary(const QString &timidityBinOverride = QString(),
+                                            bool useOverrides = false)
+{
+    for (const QString &cfgPath : timidityConfigCandidates(timidityBinOverride, useOverrides)) {
+        QFile f(cfgPath);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        QStringList activeDirectives;
+        while (!f.atEnd()) {
+            QString line = QString::fromUtf8(f.readLine()).trimmed();
+            if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+                continue;
+            int hashIdx = line.indexOf(QLatin1Char('#'));
+            if (hashIdx >= 0)
+                line = line.left(hashIdx).trimmed();
+            if (line.startsWith(QLatin1String("soundfont "), Qt::CaseInsensitive) ||
+                line.startsWith(QLatin1String("source "), Qt::CaseInsensitive)) {
+                activeDirectives.append(line);
+            }
+        }
+        if (!activeDirectives.isEmpty())
+            return QStringLiteral("%1 [%2]").arg(cfgPath, activeDirectives.last());
+        return cfgPath;
+    }
+    return QStringLiteral("default timidity.cfg");
+}
+
+/* Build a temporary TiMidity++ configuration file that clears all per-program
+ * tonebank (0..127) and drumset (0..127) patch mappings loaded from the system
+ * timidity.cfg (such as fluidr3_gm.cfg or freepats.cfg) and forces TiMidity++
+ * to synthesize all instruments exclusively from the user-selected .sf2 SoundFont. */
+static QByteArray buildTimidityCustomSf2Config(const QString &sf2Path)
+{
+    QByteArray cfg;
+    cfg.reserve(360000);
+
+    /* Remove any global soundfont directives from default timidity.cfg files */
+    for (const QString &cfgPath : timidityConfigCandidates()) {
+        QFile f(cfgPath);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        while (!f.atEnd()) {
+            QString line = QString::fromUtf8(f.readLine()).trimmed();
+            if (line.startsWith(QLatin1String("soundfont "), Qt::CaseInsensitive)) {
+                int hashIdx = line.indexOf(QLatin1Char('#'));
+                if (hashIdx >= 0)
+                    line = line.left(hashIdx).trimmed();
+                QString rest = line.mid(10).trimmed();
+                if (!rest.isEmpty()) {
+                    cfg.append("soundfont ");
+                    cfg.append(rest.toUtf8());
+                    cfg.append(" remove\n");
+                }
+            }
+        }
+    }
+
+    /* Undefine all explicit bank 0..127 and drumset 0..127 instrument mappings
+     * (e.g. from /etc/timidity/fluidr3_gm.cfg or /etc/timidity/freepats.cfg)
+     * so they do not override the custom SoundFont. */
+    for (int b = 0; b < 128; ++b) {
+        cfg.append("bank ").append(QByteArray::number(b)).append('\n');
+        for (int p = 0; p < 128; ++p)
+            cfg.append("undef ").append(QByteArray::number(p)).append('\n');
+    }
+    for (int d = 0; d < 128; ++d) {
+        cfg.append("drumset ").append(QByteArray::number(d)).append('\n');
+        for (int p = 0; p < 128; ++p)
+            cfg.append("undef ").append(QByteArray::number(p)).append('\n');
+    }
+
+    const QString cleanSf2 = QDir::fromNativeSeparators(QFileInfo(sf2Path).absoluteFilePath());
+    cfg.append("soundfont \"").append(cleanSf2.toUtf8()).append("\" order=0\n");
+    return cfg;
+}
+
+static bool synthesizeMidiWithConfiguredBackends(const QString &midPath,
+                                                 const QString &wavPath,
+                                                 int sampleRate,
+                                                 int timeoutMs,
+                                                 QString &fallbackNote,
+                                                 QString &errorMsg)
+{
+    fallbackNote.clear();
+    const QString mode = configuredMidiSynthMode();
+    const QString customSf2 = configuredMidiSoundFontPath();
+    const bool hasCustomSf2 = !customSf2.isEmpty() && QFileInfo::exists(customSf2);
+
+    auto runTimidity = [&](QString &usedDesc) -> bool {
+        const QString bin = resolveSynthToolBin(QStringLiteral("timidity"));
+        QStringList args;
+        QTemporaryFile tmpCfg(QDir::tempPath() + QLatin1String("/qddbconv_timidity_XXXXXX.cfg"));
+        if (hasCustomSf2) {
+            if (tmpCfg.open()) {
+                tmpCfg.write(buildTimidityCustomSf2Config(customSf2));
+                tmpCfg.flush();
+                tmpCfg.close();
+                args << QStringLiteral("-c") << tmpCfg.fileName();
+            } else {
+                args << QStringLiteral("-x")
+                     << QStringLiteral("soundfont \"%1\" order=0").arg(QDir::fromNativeSeparators(customSf2));
+            }
+            usedDesc = QStringLiteral("timidity (SoundFont: %1)").arg(formatSoundFontDisplay(customSf2));
+        } else {
+            const QString existingCfg = findExistingTimidityConfig();
+            if (!existingCfg.isEmpty()) {
+#ifdef Q_OS_WIN
+                args << QStringLiteral("-c") << existingCfg;
+#endif
+                usedDesc = QStringLiteral("timidity (%1)").arg(inspectTimidityConfigSummary());
+            } else {
+                const QString defaultSf2 = findDefaultSoundFont();
+                if (!defaultSf2.isEmpty() && tmpCfg.open()) {
+                    tmpCfg.write(buildTimidityCustomSf2Config(defaultSf2));
+                    tmpCfg.flush();
+                    tmpCfg.close();
+                    args << QStringLiteral("-c") << tmpCfg.fileName();
+                    usedDesc = QStringLiteral("timidity (SoundFont: %1)").arg(formatSoundFontDisplay(defaultSf2));
+                } else {
+                    usedDesc = QStringLiteral("timidity (%1)").arg(inspectTimidityConfigSummary());
+                }
+            }
+        }
+        args << midPath
+             << QStringLiteral("--preserve-silence")
+             << QStringLiteral("-Ow")
+             << QStringLiteral("-s") << QString::number(sampleRate)
+             << QStringLiteral("-o") << wavPath;
+
+        QProcess proc;
+        proc.start(bin, args);
+        if (proc.waitForFinished(timeoutMs) && proc.exitCode() == 0 && QFileInfo(wavPath).size() > 44) {
+            std::fprintf(stdout, "[qddbconv] Synthesized MIDI via %s\n", usedDesc.toUtf8().constData());
+            std::fflush(stdout);
+            return true;
+        }
+        return false;
+    };
+
+    auto runFluidSynth = [&](QString &usedDesc) -> bool {
+        const QString bin = resolveSynthToolBin(QStringLiteral("fluidsynth"));
+        const QString sf2 = hasCustomSf2 ? customSf2 : findDefaultSoundFont();
+        /* FluidSynth requires a valid .sf2/.sf3 SoundFont file; without one it exits with
+         * status 0 while writing a completely silent WAV file. Hand off to fallback if none exists. */
+        if (sf2.isEmpty() || !QFileInfo::exists(sf2))
+            return false;
+
+        QStringList args = {
+            QStringLiteral("-ni"),
+            QStringLiteral("-F"), wavPath,
+            QStringLiteral("-r"), QString::number(sampleRate),
+            sf2,
+            midPath
+        };
+        usedDesc = QStringLiteral("fluidsynth (SoundFont: %1)").arg(formatSoundFontDisplay(sf2));
+
+        QProcess proc;
+        proc.start(bin, args);
+        if (proc.waitForFinished(timeoutMs) && proc.exitCode() == 0 && QFileInfo(wavPath).size() > 44) {
+            const QString errOut = QString::fromUtf8(proc.readAllStandardError());
+            if (errOut.contains(QLatin1String("Failed to load SoundFont"), Qt::CaseInsensitive) ||
+                errOut.contains(QLatin1String("Unable to open file"), Qt::CaseInsensitive)) {
+                QFile::remove(wavPath);
+                return false;
+            }
+            std::fprintf(stdout, "[qddbconv] Synthesized MIDI via %s\n", usedDesc.toUtf8().constData());
+            std::fflush(stdout);
+            return true;
+        }
+        return false;
+    };
+
+    QString usedDesc;
+    if (mode == QLatin1String("timidity")) {
+        if (runTimidity(usedDesc))
+            return true;
+        errorMsg = QStringLiteral("Failed to synthesize MIDI via TiMidity++ (check that 'timidity' and a SoundFont/patchset are installed).");
+        return false;
+    }
+    if (mode == QLatin1String("fluidsynth")) {
+        if (runFluidSynth(usedDesc))
+            return true;
+        errorMsg = QStringLiteral("Failed to synthesize MIDI via FluidSynth (check that 'fluidsynth' and a valid .sf2 SoundFont are installed).");
+        return false;
+    }
+    if (mode == QLatin1String("timidity_auto")) {
+        if (runTimidity(usedDesc))
+            return true;
+        if (runFluidSynth(usedDesc)) {
+            fallbackNote = QStringLiteral("MIDI synthesized via %1 (timidity unavailable/failed)").arg(usedDesc);
+            return true;
+        }
+    } else {
+        /* Default "auto": FluidSynth -> TiMidity++ fallback */
+        if (runFluidSynth(usedDesc))
+            return true;
+        if (runTimidity(usedDesc)) {
+            fallbackNote = QStringLiteral("MIDI synthesized via %1 (fluidsynth or .sf2 unavailable/failed)").arg(usedDesc);
+            return true;
+        }
+    }
+
+    errorMsg = QStringLiteral("Failed to synthesize MIDI to WAV (install 'timidity' or 'fluidsynth' with a General MIDI SoundFont, or configure them in Settings -> Configure qddbconv...).");
+    return false;
 }
 
 static void decodeMobileTrackToMidi(const uint8_t *p,
@@ -718,20 +1328,23 @@ static void decodeMobileTrackToMidi(const uint8_t *p,
                                     std::vector<MidiTimedEvent> &events,
                                     std::vector<SmafWaveTrigger> &waveTriggers)
 {
+    const uint8_t *seqStart = p;
     const uint8_t *end = p + n;
     const double tbD = smafTimeBaseMs(t.durationTimeBase);
     const double tbG = smafTimeBaseMs(t.gateTimeBase);
 
-    /* Per Yamaha SMAF MidiContext specification:
-     * Channel 9 defaults to percussion unless channelStatus[9] is explicitly Melody (1).
-     * Any channel with channelStatus Type == Rhythm (3) is also percussion. */
+    /* Per Yamaha SMAF Mobile Standard (MA-3 / MA-5) bank & channel state:
+     * Channel 9 defaults to Drum/Stream mode (bank 0x80 / MSB 0x7D) unless switched
+     * to Melody mode via CC#0 = 0x7C. Any channel 0..15 switched to CC#0 = 0x7D enters
+     * Drum/Stream mode; CC#0 = 0x00 switches channels != 9 to Melody mode while leaving
+     * channel 9 in Drum/Stream mode. */
     bool isDrum[16] = {};
     isDrum[9] = true;
     for (size_t i = 0; i < 16 && i < t.channelStatus.size(); ++i) {
         uint8_t chType = t.channelStatus[i] & 0x03;
         if (chType == 3)
             isDrum[i] = true;
-        else if (chType == 1)
+        else if (chType == 1 && i != 9)
             isDrum[i] = false;
     }
 
@@ -739,6 +1352,8 @@ static void decodeMobileTrackToMidi(const uint8_t *p,
         int c = smafCh & 0x0F;
         if (isDrum[c])
             return 9;
+        if (c == 9)
+            return 15; /* Melodic notes on SMAF channel 9 (CC#0=0x7C) route to melodic MIDI channel 15 */
         return static_cast<uint8_t>(c);
     };
 
@@ -761,18 +1376,88 @@ static void decodeMobileTrackToMidi(const uint8_t *p,
     std::fill(std::begin(chVol), std::end(chVol), 100);
     std::fill(std::begin(chExp), std::end(chExp), 127);
     std::fill(std::begin(chPan), std::end(chPan), 64);
+    for (int i = 0; i < 16; ++i)
+        chBankMsb[i] = isDrum[i] ? 0x7D : 0x00;
 
-    /* Stream PCM bindings from MA-3/MA-5 SysEx 43 79 06|07 7F 0B [waveId] [slot] [pan] F7 */
-    int lastStreamWaveId = 1;
-    int lastStreamPan = -1;
-    int streamSlotWaveId[32] = {};
-    int streamSlotPan[32];
-    std::fill(std::begin(streamSlotPan), std::end(streamSlotPan), -1);
-    int nextStreamSlot = 0;
+    /* Per-wave Stream Panpot table (waveNumber 1..32):
+     *   panMode: 0 = explicit panVal, 1 = center (64), 2 = follow channel CC#10 (default) */
+    uint8_t wavePanMode[33];
+    uint8_t wavePanVal[33];
+    std::fill(std::begin(wavePanMode), std::end(wavePanMode), 2);
+    std::fill(std::begin(wavePanVal), std::end(wavePanVal), 64);
 
+    /* Stereo Wave Pair table (up to 2 pairs: pairIdx 1..2 -> waveL, waveR) */
+    uint8_t stereoPairL[3] = {0, 0, 0};
+    uint8_t stereoPairR[3] = {0, 0, 0};
+    uint8_t masterVol = 127;
+
+    auto parseSmafSysExPayload = [&](const uint8_t *sx, size_t avail) {
+        if (avail >= 6 && sx[0] == 0x43 && sx[1] == 0x79 && (sx[2] == 0x06 || sx[2] == 0x07) && sx[3] == 0x7F) {
+            const uint8_t devId = sx[2]; /* 0x06 = MA-3, 0x07 = MA-5 */
+            const uint8_t cmd = sx[4];
+            if ((devId == 0x06 && cmd == 0x07) || (devId == 0x07 && cmd == 0x00)) {
+                /* Master Volume: 43 79 06 7F 07 [vol] F7 / 43 79 07 7F 00 [vol] F7 */
+                masterVol = sx[5] & 0x7F;
+            } else if (((devId == 0x06 && cmd == 0x0A) || (devId == 0x07 && cmd == 0x0B)) && avail >= 8) {
+                /* Stream Panpot: 43 79 06 7F 0A [waveId] [panMode] [panVal] F7 (MA-3)
+                 *                43 79 07 7F 0B [waveId] [panMode] [panVal] F7 (MA-5) */
+                int wid = sx[5] & 0x7F;
+                uint8_t pmode = sx[6] & 0x7F;
+                uint8_t pval = sx[7] & 0x7F;
+                if (wid >= 1 && wid <= 32 && pmode <= 2) {
+                    wavePanMode[wid] = pmode;
+                    wavePanVal[wid] = (pval == 0) ? 64 : pval;
+                }
+            } else if (((devId == 0x06 && cmd == 0x09) || (devId == 0x07 && cmd == 0x0A)) && avail >= 8) {
+                /* Stereo Wave Pair: 43 79 06 7F 09 [pairIdx] [waveL] [waveR] F7 (MA-3)
+                 *                   43 79 07 7F 0A [pairIdx] [waveL] [waveR] F7 (MA-5) */
+                int pairIdx = sx[5] & 0x7F;
+                uint8_t wL = sx[6] & 0x7F;
+                uint8_t wR = sx[7] & 0x7F;
+                if (pairIdx >= 1 && pairIdx <= 2) {
+                    if (wL == 0 && wR == 0) {
+                        stereoPairL[pairIdx] = 0;
+                        stereoPairR[pairIdx] = 0;
+                    } else if (wL >= 1 && wL <= 32 && wR >= 1 && wR <= 32 && wL != wR) {
+                        stereoPairL[pairIdx] = wL;
+                        stereoPairR[pairIdx] = wR;
+                    }
+                }
+            }
+        }
+    };
+
+    /* Also scan Mtsu setupData for any initial SysEx settings */
+    if (!t.setupData.empty()) {
+        const uint8_t *sp = t.setupData.data();
+        const uint8_t *send = sp + t.setupData.size();
+        while (sp < send) {
+            if (*sp == 0xF0) {
+                ++sp;
+                uint32_t slen = readMidiVlq(sp, send);
+                size_t savail = std::min<size_t>(slen, static_cast<size_t>(send - sp));
+                parseSmafSysExPayload(sp, savail);
+                sp += savail;
+            } else {
+                ++sp;
+            }
+        }
+    }
+
+    size_t firstEventIdx = events.size();
+    size_t firstTrigIdx = waveTriggers.size();
     double curMs = 0.0;
     int guard = 0;
     while (p < end && guard++ < 2000000 && events.size() < 400000) {
+        size_t eventOffset = static_cast<size_t>(p - seqStart);
+        if (t.hasStartPoint && eventOffset == t.startPointOffset)
+            t.parsedStartMs = static_cast<uint64_t>(std::llround(curMs));
+        if (t.hasStopPoint && eventOffset >= t.stopPointOffset) {
+            t.parsedStopMs = static_cast<uint64_t>(std::llround(curMs));
+            t.hasParsedStopMs = true;
+            break;
+        }
+
         uint32_t dur = readMidiVlq(p, end);
         curMs += dur * tbD;
         if (p >= end)
@@ -802,42 +1487,58 @@ static void decodeMobileTrackToMidi(const uint8_t *p,
             uint32_t gate = readMidiVlq(p, end);
             if (gate == 0 || vel == 0)
                 break;
+            if (t.hasStartPoint && eventOffset < t.startPointOffset)
+                break;
             uint64_t gateMs = static_cast<uint64_t>(std::max(1.0, std::round(gate * tbG)));
             uint64_t offTick = tick + gateMs;
 
             /* Check if this note triggers an embedded Mtsp/Mwa* Stream PCM chunk.
-             * Note: MA-3/MA-5 Mtsu 43 79 06|07 7F 01 (VM35VoicePC) defines FM/WaveTable
-             * synthesizer patches (backed by 43 79 06|07 7F 03 static RAM waves or ROM),
-             * NOT Mtsp/Mwa* stream chunks. Mtsp/Mwa* stream chunks are triggered only by:
-             *   1) note == 0 (C-1 stream trigger note, 8.18 Hz non-musical), or
-             *   2) low stream slot notes (note < 24) on a percussion/stream channel
-             *      (smafCh == 9, isDrum, or Bank MSB == 0x7D) when that stream wave exists. */
-            if (!t.waves.empty()) {
-                bool isStreamChannel = (smafCh == 9 || isDrum[smafCh] || chBankMsb[smafCh] == 0x7D);
-                if (note == 0 || (isStreamChannel && note < 24)) {
-                    int candidateId = 0;
+             * In MA-3 / MA-5 Mobile Standard, on any channel in Drum/Stream mode
+             * (isDrum[smafCh] or CC#0 == 0x7D):
+             *   - notes 0..12 trigger Mwa1..Mwa13 (waveId = note + 1)
+             *   - notes 13..91 play Drum Kit percussion notes
+             *   - notes 92..110 trigger Mwa14..Mwa32 (waveId = note - 78) */
+            if (!t.waves.empty() && (isDrum[smafCh] || chBankMsb[smafCh] == 0x7D)) {
+                int candidateId = 0;
+                if (note <= 12)
+                    candidateId = static_cast<int>(note) + 1;
+                else if (note >= 92 && note <= 110)
+                    candidateId = static_cast<int>(note) - 78;
+
+                if (candidateId >= 1 && candidateId <= 32 && hasWaveNumber(candidateId)) {
                     uint8_t trigPan = chPan[smafCh];
-                    if (note == 0) {
-                        if (lastStreamWaveId > 0 && hasWaveNumber(lastStreamWaveId)) {
-                            candidateId = lastStreamWaveId;
-                            if (lastStreamPan >= 0)
-                                trigPan = static_cast<uint8_t>(lastStreamPan);
-                        } else if (chBankMsb[smafCh] == 0x7D && smafCh != 9 && hasWaveNumber(chProg[smafCh] + 1)) {
-                            candidateId = static_cast<int>(chProg[smafCh]) + 1;
-                        } else {
-                            candidateId = t.waves.front().waveNumber;
-                        }
-                    } else if (note < 24) {
-                        if (streamSlotWaveId[note] > 0 && hasWaveNumber(streamSlotWaveId[note])) {
-                            candidateId = streamSlotWaveId[note];
-                            if (streamSlotPan[note] >= 0)
-                                trigPan = static_cast<uint8_t>(streamSlotPan[note]);
-                        } else if (hasWaveNumber(static_cast<int>(note) + 1)) {
-                            candidateId = static_cast<int>(note) + 1;
+                    if (wavePanMode[candidateId] == 0)
+                        trigPan = wavePanVal[candidateId];
+                    else if (wavePanMode[candidateId] == 1)
+                        trigPan = 64;
+
+                    int pairedRightWave = 0;
+                    for (int pi = 1; pi <= 2; ++pi) {
+                        if (stereoPairL[pi] == candidateId && stereoPairR[pi] >= 1 && hasWaveNumber(stereoPairR[pi])) {
+                            pairedRightWave = stereoPairR[pi];
+                            break;
                         }
                     }
 
-                    if (candidateId > 0) {
+                    if (pairedRightWave > 0) {
+                        SmafWaveTrigger trigL;
+                        trigL.startMs = tick;
+                        trigL.durationMs = gateMs;
+                        trigL.trackIdx = trackIdx;
+                        trigL.waveNumber = candidateId;
+                        trigL.pitchSemitones = 0;
+                        trigL.velocity = vel;
+                        trigL.volume = chVol[smafCh];
+                        trigL.expression = chExp[smafCh];
+                        trigL.masterVolume = masterVol;
+                        trigL.pan = 0; /* Left channel of stereo wave pair */
+                        waveTriggers.push_back(trigL);
+
+                        SmafWaveTrigger trigR = trigL;
+                        trigR.waveNumber = pairedRightWave;
+                        trigR.pan = 127; /* Right channel of stereo wave pair */
+                        waveTriggers.push_back(trigR);
+                    } else {
                         SmafWaveTrigger trig;
                         trig.startMs = tick;
                         trig.durationMs = gateMs;
@@ -847,10 +1548,11 @@ static void decodeMobileTrackToMidi(const uint8_t *p,
                         trig.velocity = vel;
                         trig.volume = chVol[smafCh];
                         trig.expression = chExp[smafCh];
+                        trig.masterVolume = masterVol;
                         trig.pan = trigPan;
                         waveTriggers.push_back(trig);
-                        break;
                     }
+                    break;
                 }
             }
 
@@ -870,8 +1572,13 @@ static void decodeMobileTrackToMidi(const uint8_t *p,
             uint8_t val = *p++ & 0x7F;
             if (cc == 0) {
                 chBankMsb[smafCh] = val;
-                if ((val == 0x7D || val == 0x7F) && smafCh == 9)
+                if (val == 0x7D && chBankLsb[smafCh] == 0) {
                     isDrum[smafCh] = true;
+                } else if (val == 0x7C && chBankLsb[smafCh] == 0) {
+                    isDrum[smafCh] = false;
+                } else if (val == 0x00 && chBankLsb[smafCh] < 0x10 && smafCh != 9) {
+                    isDrum[smafCh] = false;
+                }
                 mch = mapMidiCh(smafCh);
                 /* Normalize SMAF internal Bank Select MSB (0x7C/0x7D) to GM Bank 0 */
                 if (mch != 9)
@@ -879,6 +1586,12 @@ static void decodeMobileTrackToMidi(const uint8_t *p,
                 break;
             } else if (cc == 32) {
                 chBankLsb[smafCh] = val;
+                if (chBankMsb[smafCh] == 0x7D && val == 0)
+                    isDrum[smafCh] = true;
+                else if (chBankMsb[smafCh] == 0x7C && val == 0)
+                    isDrum[smafCh] = false;
+                else if (chBankMsb[smafCh] == 0x00 && val < 0x10 && smafCh != 9)
+                    isDrum[smafCh] = false;
                 mch = mapMidiCh(smafCh);
                 /* Normalize SMAF custom Bank Select LSB to GM Bank 0 */
                 if (mch != 9)
@@ -899,6 +1612,13 @@ static void decodeMobileTrackToMidi(const uint8_t *p,
                 break;
             uint8_t pc = *p++ & 0x7F;
             chProg[smafCh] = pc;
+            if (chBankMsb[smafCh] == 0x7D && chBankLsb[smafCh] == 0 && chProg[smafCh] < 10)
+                isDrum[smafCh] = true;
+            else if (chBankMsb[smafCh] == 0x7C && chBankLsb[smafCh] == 0)
+                isDrum[smafCh] = false;
+            else if (chBankMsb[smafCh] == 0x00 && chBankLsb[smafCh] < 0x10 && smafCh != 9)
+                isDrum[smafCh] = false;
+            mch = mapMidiCh(smafCh);
             /* On MIDI Percussion Channel 9, force Program 0 (Standard GM Drum Kit) so
              * TiMidity++ does not mute percussion with 'Drum set N is undefined'. */
             uint8_t outPc = (mch == 9) ? 0 : pc;
@@ -923,27 +1643,7 @@ static void decodeMobileTrackToMidi(const uint8_t *p,
             if (st == 0xF0) {
                 uint32_t len = readMidiVlq(p, end);
                 size_t avail = std::min<size_t>(len, static_cast<size_t>(end - p));
-                if (avail >= 8 && p[0] == 0x43 && p[1] == 0x79 && (p[2] == 0x06 || p[2] == 0x07) && p[3] == 0x7F) {
-                    if (p[4] == 0x0B && avail >= 8) {
-                        /* Stream PCM setup: 43 79 06|07 7F 0B [waveId] [slot] [pan] F7 */
-                        int wid = p[5] & 0x7F;
-                        int slot = p[6] & 0x7F;
-                        int pan = p[7] & 0x7F;
-                        if (wid > 0) {
-                            lastStreamWaveId = wid;
-                            lastStreamPan = pan;
-                            if (slot >= 0 && slot < 32) {
-                                streamSlotWaveId[slot] = wid;
-                                streamSlotPan[slot] = pan;
-                            }
-                            if (nextStreamSlot < 32 && streamSlotWaveId[nextStreamSlot] == 0) {
-                                streamSlotWaveId[nextStreamSlot] = wid;
-                                streamSlotPan[nextStreamSlot] = pan;
-                            }
-                            ++nextStreamSlot;
-                        }
-                    }
-                }
+                parseSmafSysExPayload(p, avail);
                 p += avail;
             } else if (st == 0xFF) {
                 if (p >= end)
@@ -952,6 +1652,10 @@ static void decodeMobileTrackToMidi(const uint8_t *p,
                 if (metaType == 0x00)
                     break;
                 if (metaType == 0x2F) {
+                    if (p < end && *p == 0x00)
+                        ++p;
+                    t.parsedStopMs = tick;
+                    t.hasParsedStopMs = true;
                     p = end;
                     break;
                 }
@@ -965,6 +1669,24 @@ static void decodeMobileTrackToMidi(const uint8_t *p,
         default:
             break;
         }
+    }
+
+    if (!t.hasParsedStopMs) {
+        t.parsedStopMs = static_cast<uint64_t>(std::llround(curMs));
+        t.hasParsedStopMs = true;
+    }
+
+    /* Clamp Note-Off and wave trigger durations to the track stop point (FF 2F / sp:) */
+    for (size_t i = firstEventIdx; i < events.size(); ++i) {
+        if (events[i].tickMs > t.parsedStopMs)
+            events[i].tickMs = t.parsedStopMs;
+    }
+    for (size_t i = firstTrigIdx; i < waveTriggers.size(); ++i) {
+        SmafWaveTrigger &trig = waveTriggers[i];
+        if (trig.startMs >= t.parsedStopMs)
+            trig.durationMs = 0;
+        else if (trig.startMs + trig.durationMs > t.parsedStopMs)
+            trig.durationMs = t.parsedStopMs - trig.startMs;
     }
 }
 
@@ -1017,7 +1739,9 @@ static bool parseFullSmaf(const QByteArray &bytes, ParsedSmafContainer &out)
                 if (sbody + ssz > sz)
                     ssz = static_cast<uint32_t>(sz - sbody);
 
-                if (matchPrefix3(sc, "Mts") && sc[3] == 'u')
+                if (matchPrefix3(sc, "Msp") && sc[3] == 'I')
+                    parseSeekPhraseInfoChunk(d + body + sbody, ssz, t);
+                else if (matchPrefix3(sc, "Mts") && sc[3] == 'u')
                     t.setupData.assign(d + body + sbody, d + body + sbody + ssz);
                 else if (matchPrefix3(sc, "Mts") && sc[3] == 'q')
                     t.sequenceData.assign(d + body + sbody, d + body + sbody + ssz);
@@ -1053,7 +1777,9 @@ static bool parseFullSmaf(const QByteArray &bytes, ParsedSmafContainer &out)
                 size_t sbody = spos + 8;
                 if (sbody + ssz > sz)
                     ssz = static_cast<uint32_t>(sz - sbody);
-                if (matchPrefix3(sc, "Ats") && sc[3] == 'u')
+                if (matchPrefix3(sc, "Asp") && sc[3] == 'I')
+                    parseSeekPhraseInfoChunk(d + body + sbody, ssz, t);
+                else if (matchPrefix3(sc, "Ats") && sc[3] == 'u')
                     t.setupData.assign(d + body + sbody, d + body + sbody + ssz);
                 else if (matchPrefix3(sc, "Ats") && sc[3] == 'q')
                     t.sequenceData.assign(d + body + sbody, d + body + sbody + ssz);
@@ -1099,8 +1825,40 @@ static bool parseFullSmaf(const QByteArray &bytes, ParsedSmafContainer &out)
             trig.velocity = 100;
             trig.volume = 100;
             trig.expression = 127;
+            trig.masterVolume = 127;
             trig.pan = 64;
             out.waveTriggers.push_back(trig);
+        }
+    }
+
+    /* Remove any wave triggers that were clamped to 0 duration by stopPointOffset / FF 2F
+     * (except unsequenced pure-PCM triggers which have sequenceData.empty()) */
+    out.waveTriggers.erase(
+        std::remove_if(out.waveTriggers.begin(), out.waveTriggers.end(),
+                       [&](const SmafWaveTrigger &trig) {
+                           return trig.durationMs == 0 &&
+                                  trig.trackIdx < out.tracks.size() &&
+                                  !out.tracks[trig.trackIdx].sequenceData.empty();
+                       }),
+        out.waveTriggers.end());
+
+    /* Apply container-wide MspI/AspI start-point offset (st:) if present across active tracks */
+    uint64_t globalStartMs = UINT64_MAX;
+    bool anyStartPoint = false;
+    for (const SmafScoreTrack &t : out.tracks) {
+        if (!t.sequenceData.empty() && t.hasStartPoint) {
+            anyStartPoint = true;
+            globalStartMs = std::min(globalStartMs, t.parsedStartMs);
+        }
+    }
+    if (anyStartPoint && globalStartMs > 0 && globalStartMs != UINT64_MAX) {
+        for (MidiTimedEvent &ev : out.midiEvents)
+            ev.tickMs = (ev.tickMs > globalStartMs) ? (ev.tickMs - globalStartMs) : 0;
+        for (SmafWaveTrigger &trig : out.waveTriggers)
+            trig.startMs = (trig.startMs > globalStartMs) ? (trig.startMs - globalStartMs) : 0;
+        for (SmafScoreTrack &t : out.tracks) {
+            if (t.hasParsedStopMs)
+                t.parsedStopMs = (t.parsedStopMs > globalStartMs) ? (t.parsedStopMs - globalStartMs) : 0;
         }
     }
 
@@ -1111,23 +1869,30 @@ static bool parseFullSmaf(const QByteArray &bytes, ParsedSmafContainer &out)
                          return a.priority < b.priority;
                      });
 
-    if (!out.midiEvents.empty())
+    /* Compute container duration from track stop points (FF 2F / sp:), MIDI events, and wave triggers */
+    for (const SmafScoreTrack &t : out.tracks) {
+        if (t.hasParsedStopMs && t.parsedStopMs > out.durationMs)
+            out.durationMs = t.parsedStopMs;
+    }
+    if (!out.midiEvents.empty() && out.midiEvents.back().tickMs > out.durationMs)
         out.durationMs = out.midiEvents.back().tickMs;
 
-    /* Also check wave trigger end times and raw wave duration */
     for (const SmafWaveTrigger &trig : out.waveTriggers) {
-        if (trig.startMs + trig.durationMs > out.durationMs)
-            out.durationMs = trig.startMs + trig.durationMs;
-    }
-    for (const SmafScoreTrack &t : out.tracks) {
-        for (const SmafWaveChunk &w : t.waves) {
-            if (w.sampleRate > 0 && !w.rawBytes.empty()) {
-                uint64_t bitsPerFrame = static_cast<uint64_t>(w.bits > 0 ? w.bits : 4) *
-                                        static_cast<uint64_t>(w.channels > 0 ? w.channels : 1);
-                uint64_t frames = (w.rawBytes.size() * 8ULL) / bitsPerFrame;
-                uint64_t waveMs = (frames * 1000ULL) / w.sampleRate;
-                if (waveMs > out.durationMs)
-                    out.durationMs = waveMs;
+        if (trig.durationMs > 0) {
+            if (trig.startMs + trig.durationMs > out.durationMs)
+                out.durationMs = trig.startMs + trig.durationMs;
+        } else if (trig.trackIdx < out.tracks.size()) {
+            /* Unsequenced pure-PCM fallback trigger: use raw wave duration */
+            const SmafScoreTrack &t = out.tracks[trig.trackIdx];
+            for (const SmafWaveChunk &w : t.waves) {
+                if (w.waveNumber == trig.waveNumber && w.sampleRate > 0 && !w.rawBytes.empty()) {
+                    uint64_t bitsPerFrame = static_cast<uint64_t>(w.bits > 0 ? w.bits : 4) *
+                                            static_cast<uint64_t>(w.channels > 0 ? w.channels : 1);
+                    uint64_t frames = (w.rawBytes.size() * 8ULL) / bitsPerFrame;
+                    uint64_t waveMs = (frames * 1000ULL) / w.sampleRate;
+                    if (trig.startMs + waveMs > out.durationMs)
+                        out.durationMs = trig.startMs + waveMs;
+                }
             }
         }
     }
@@ -1322,8 +2087,11 @@ bool SmafConverter::convertMmfToMid(const QString &mmfPath,
             trkData.append(static_cast<char>(ev.data2 & 0x7F));
     }
 
-    /* End of Track Meta Event: 00 FF 2F 00 */
-    trkData.append('\x00');
+    /* End of Track Meta Event: FF 2F 00 at container stop point (smaf.durationMs) */
+    uint32_t endDelta = (smaf.durationMs > lastTick)
+                            ? static_cast<uint32_t>(smaf.durationMs - lastTick)
+                            : 0;
+    writeMidiVlq(trkData, endDelta);
     trkData.append('\xFF');
     trkData.append('\x2F');
     trkData.append('\x00');
@@ -1372,51 +2140,75 @@ bool SmafConverter::decodeMmfToWav(const QString &mmfPath,
     std::vector<int16_t> stereoMix; /* Interleaved L, R at 44100 Hz */
     bool renderedMidi = false;
 
+    auto loadRenderedWavIntoMix = [&]() -> bool {
+        QFile wf(wavPath);
+        if (!wf.open(QIODevice::ReadOnly))
+            return false;
+        QByteArray wavBytes = wf.readAll();
+        wf.close();
+        int dataPos = wavBytes.indexOf("data");
+        if (dataPos < 12 || dataPos + 8 > wavBytes.size())
+            return false;
+        const uint8_t *hdr = reinterpret_cast<const uint8_t *>(wavBytes.constData());
+        uint16_t ch = static_cast<uint16_t>(hdr[22] | (hdr[23] << 8));
+        uint32_t dataSz = static_cast<uint32_t>(
+            hdr[dataPos + 4] | (hdr[dataPos + 5] << 8) |
+            (hdr[dataPos + 6] << 16) | (hdr[dataPos + 7] << 24));
+        size_t pcmOffset = static_cast<size_t>(dataPos + 8);
+        size_t availBytes = std::min<size_t>(dataSz, static_cast<size_t>(wavBytes.size()) - pcmOffset);
+        const int16_t *srcPcm = reinterpret_cast<const int16_t *>(wavBytes.constData() + pcmOffset);
+        size_t totalSamples = availBytes / sizeof(int16_t);
+        if (ch == 2) {
+            stereoMix.assign(srcPcm, srcPcm + totalSamples);
+            return !stereoMix.empty();
+        } else if (ch == 1) {
+            stereoMix.resize(totalSamples * 2);
+            for (size_t i = 0; i < totalSamples; ++i) {
+                stereoMix[i * 2] = srcPcm[i];
+                stereoMix[i * 2 + 1] = srcPcm[i];
+            }
+            return !stereoMix.empty();
+        }
+        return false;
+    };
+
     /* 1. When the .mmf file contains a musical score (MTR/Mtsq), render the full
-     *    MIDI score via timidity into 44100 Hz 16-bit stereo PCM first. */
+     *    MIDI score via the configured synthesizer (TiMidity++ / FluidSynth) into 44100 Hz 16-bit stereo PCM first. */
+    QString midiFallbackNote;
     if (!smaf.midiEvents.empty()) {
         QTemporaryFile tmpMid(QFileInfo(wavPath).absolutePath() + QLatin1String("/qddbconv_smaf_XXXXXX.mid"));
         if (tmpMid.open()) {
             QString midFile = tmpMid.fileName();
             tmpMid.close();
             if (convertMmfToMid(mmfPath, midFile, errorMsg)) {
-                QProcess proc;
-                proc.start(resolveSynthToolBin(QStringLiteral("timidity")),
-                           {midFile, QStringLiteral("--preserve-silence"),
-                            QStringLiteral("-Ow"), QStringLiteral("-s"), QString::number(outRate),
-                            QStringLiteral("-o"), wavPath});
-                if (proc.waitForFinished(60000) && proc.exitCode() == 0) {
-                    QFile wf(wavPath);
-                    if (wf.open(QIODevice::ReadOnly)) {
-                        QByteArray wavBytes = wf.readAll();
-                        wf.close();
-                        int dataPos = wavBytes.indexOf("data");
-                        if (dataPos >= 12 && dataPos + 8 <= wavBytes.size()) {
-                            const uint8_t *hdr = reinterpret_cast<const uint8_t *>(wavBytes.constData());
-                            uint16_t ch = static_cast<uint16_t>(hdr[22] | (hdr[23] << 8));
-                            uint32_t dataSz = static_cast<uint32_t>(
-                                hdr[dataPos + 4] | (hdr[dataPos + 5] << 8) |
-                                (hdr[dataPos + 6] << 16) | (hdr[dataPos + 7] << 24));
-                            size_t pcmOffset = static_cast<size_t>(dataPos + 8);
-                            size_t availBytes = std::min<size_t>(dataSz, static_cast<size_t>(wavBytes.size()) - pcmOffset);
-                            const int16_t *srcPcm = reinterpret_cast<const int16_t *>(wavBytes.constData() + pcmOffset);
-                            size_t totalSamples = availBytes / sizeof(int16_t);
-                            if (ch == 2) {
-                                stereoMix.assign(srcPcm, srcPcm + totalSamples);
-                                renderedMidi = true;
-                            } else if (ch == 1) {
-                                stereoMix.resize(totalSamples * 2);
-                                for (size_t i = 0; i < totalSamples; ++i) {
-                                    stereoMix[i * 2] = srcPcm[i];
-                                    stereoMix[i * 2 + 1] = srcPcm[i];
-                                }
-                                renderedMidi = true;
-                            }
-                        }
-                    }
+                QString synthErr;
+                if (synthesizeMidiWithConfiguredBackends(midFile, wavPath, static_cast<int>(outRate),
+                                                         60000, midiFallbackNote, synthErr)) {
+                    renderedMidi = loadRenderedWavIntoMix();
+                } else {
+                    errorMsg = synthErr;
                 }
             }
             QFile::remove(midFile);
+        }
+    }
+
+    /* Sort wave triggers chronologically and cut off any wave instance retriggered
+     * before its previous gate finishes (matching hardware stream voice retrigger behavior). */
+    std::stable_sort(smaf.waveTriggers.begin(), smaf.waveTriggers.end(),
+                     [](const SmafWaveTrigger &a, const SmafWaveTrigger &b) {
+                         return a.startMs < b.startMs;
+                     });
+    for (size_t i = 0; i < smaf.waveTriggers.size(); ++i) {
+        SmafWaveTrigger &cur = smaf.waveTriggers[i];
+        for (size_t j = i + 1; j < smaf.waveTriggers.size(); ++j) {
+            const SmafWaveTrigger &nxt = smaf.waveTriggers[j];
+            if (nxt.trackIdx == cur.trackIdx && nxt.waveNumber == cur.waveNumber && nxt.startMs >= cur.startMs) {
+                uint64_t maxDur = nxt.startMs - cur.startMs;
+                if (cur.durationMs == 0 || cur.durationMs > maxDur)
+                    cur.durationMs = maxDur;
+                break;
+            }
         }
     }
 
@@ -1427,6 +2219,8 @@ bool SmafConverter::decodeMmfToWav(const QString &mmfPath,
         if (trig.trackIdx >= smaf.tracks.size())
             continue;
         const SmafScoreTrack &trk = smaf.tracks[trig.trackIdx];
+        if (!trk.sequenceData.empty() && trig.durationMs == 0)
+            continue;
         const SmafWaveChunk *wave = nullptr;
         for (const SmafWaveChunk &w : trk.waves) {
             if (w.waveNumber == trig.waveNumber) {
@@ -1456,8 +2250,7 @@ bool SmafConverter::decodeMmfToWav(const QString &mmfPath,
         size_t fullWaveFrames = static_cast<size_t>(std::floor(static_cast<double>(srcFrames) / step));
         size_t outFramesFromWave = fullWaveFrames;
         bool gatedEarly = false;
-        /* Ignore tiny (<100 ms) trigger pulses on long one-shot waves so they play naturally */
-        if (trig.durationMs >= 100) {
+        if (trig.durationMs > 0) {
             size_t gateFrames = static_cast<size_t>((trig.durationMs * outRate) / 1000ULL);
             if (gateFrames < outFramesFromWave) {
                 outFramesFromWave = gateFrames;
@@ -1474,7 +2267,8 @@ bool SmafConverter::decodeMmfToWav(const QString &mmfPath,
 
         double gain = (static_cast<double>(trig.velocity) / 127.0) *
                       (static_cast<double>(trig.volume) / 100.0) *
-                      (static_cast<double>(trig.expression) / 127.0) * 1.4;
+                      (static_cast<double>(trig.expression) / 127.0) *
+                      (static_cast<double>(trig.masterVolume) / 127.0) * 1.4;
         gain = std::clamp(gain, 0.25, 2.0);
 
         double gainL = gain;
@@ -1513,9 +2307,21 @@ bool SmafConverter::decodeMmfToWav(const QString &mmfPath,
     }
 
     if (renderedMidi || mixedAnyWave) {
-        /* If only MIDI was rendered and no waves had to be mixed, wavPath is already written */
-        if (renderedMidi && !mixedAnyWave)
-            return true;
+        /* Clamp excess post-stop synthesizer tail to the container duration when known */
+        if (smaf.durationMs > 0) {
+            size_t targetFrames = static_cast<size_t>((smaf.durationMs * outRate) / 1000ULL);
+            size_t targetSamples = targetFrames * 2;
+            if (targetSamples > 0 && stereoMix.size() > targetSamples) {
+                size_t fadeFrames = std::min<size_t>(441, targetFrames / 4);
+                for (size_t fIdx = 0; fIdx < fadeFrames; ++fIdx) {
+                    size_t frame = targetFrames - fadeFrames + fIdx;
+                    double env = static_cast<double>(fadeFrames - fIdx) / static_cast<double>(fadeFrames);
+                    stereoMix[frame * 2] = static_cast<int16_t>(std::lround(stereoMix[frame * 2] * env));
+                    stereoMix[frame * 2 + 1] = static_cast<int16_t>(std::lround(stereoMix[frame * 2 + 1] * env));
+                }
+                stereoMix.resize(targetSamples);
+            }
+        }
 
         uint32_t dataBytes = static_cast<uint32_t>(stereoMix.size() * sizeof(int16_t));
         QByteArray wav;
@@ -1536,13 +2342,15 @@ bool SmafConverter::decodeMmfToWav(const QString &mmfPath,
 
         QFile outF(wavPath);
         if (outF.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            errorMsg = midiFallbackNote;
             outF.write(wav);
             outF.close();
             return true;
         }
     }
 
-    errorMsg = QStringLiteral("Failed to render .mmf to audio (install 'timidity' to synthesize FM/MIDI .mmf scores to audio, or select the 'Standard MIDI (.mid)' preset).");
+    if (errorMsg.isEmpty())
+        errorMsg = QStringLiteral("Failed to render .mmf to audio (install 'timidity' or 'fluidsynth' to synthesize FM/MIDI .mmf scores to audio, or select the 'Standard MIDI (.mid)' preset).");
     return false;
 }
 
@@ -1714,27 +2522,96 @@ bool SmafConverter::decodeMidToWav(const QString &midPath,
     if (sampleRate < 4000 || sampleRate > 192000)
         sampleRate = 44100;
 
-    /* 1. Synthesize MIDI to WAV using TiMidity++ */
-    {
-        QProcess proc;
-        proc.start(resolveSynthToolBin(QStringLiteral("timidity")),
-                   {midPath, QStringLiteral("--preserve-silence"), QStringLiteral("-Ow"),
-                    QStringLiteral("-s"), QString::number(sampleRate),
-                    QStringLiteral("-o"), wavPath});
-        if (proc.waitForFinished(120000) && proc.exitCode() == 0 && QFileInfo(wavPath).size() > 44)
-            return true;
+    QString fallbackNote;
+    if (synthesizeMidiWithConfiguredBackends(midPath, wavPath, sampleRate, 120000, fallbackNote, errorMsg)) {
+        errorMsg = fallbackNote;
+        return true;
     }
-
-    /* 2. Fallback: FluidSynth if installed */
-    {
-        QProcess proc;
-        proc.start(resolveSynthToolBin(QStringLiteral("fluidsynth")),
-                   {QStringLiteral("-ni"), QStringLiteral("-F"), wavPath,
-                    QStringLiteral("-r"), QString::number(sampleRate), midPath});
-        if (proc.waitForFinished(120000) && proc.exitCode() == 0 && QFileInfo(wavPath).size() > 44)
-            return true;
-    }
-
-    errorMsg = QStringLiteral("Failed to synthesize MIDI file '%1' to WAV (make sure 'timidity' is installed with a soundfont/freepats).").arg(QFileInfo(midPath).fileName());
     return false;
 }
+
+QString SmafConverter::describeActiveMidiSynth(const QString &synthModeOverride,
+                                               const QString &soundFontOverride,
+                                               bool useOverrides,
+                                               const QString &timidityBinOverride,
+                                               const QString &fluidsynthBinOverride)
+{
+    const QString mode = configuredMidiSynthMode(synthModeOverride, useOverrides);
+    const QString customSf2 = configuredMidiSoundFontPath(soundFontOverride, useOverrides);
+    const bool hasCustomSf2 = !customSf2.isEmpty();
+    const QString defaultSf2 = findDefaultSoundFont(timidityBinOverride, fluidsynthBinOverride, useOverrides);
+
+    const QString timidityExe = locateSynthExecutable(QStringLiteral("timidity"), timidityBinOverride, useOverrides);
+    const QString fluidsynthExe = locateSynthExecutable(QStringLiteral("fluidsynth"), fluidsynthBinOverride, useOverrides);
+    const bool hasTimidity = !timidityExe.isEmpty();
+    const bool hasFluidsynth = !fluidsynthExe.isEmpty();
+
+    const QString existingTimCfg = findExistingTimidityConfig(timidityBinOverride, useOverrides);
+    const QString timiditySf2Summary = hasCustomSf2
+        ? QStringLiteral("SoundFont: %1").arg(formatSoundFontDisplay(customSf2))
+        : (!existingTimCfg.isEmpty()
+               ? inspectTimidityConfigSummary(timidityBinOverride, useOverrides)
+               : (!defaultSf2.isEmpty()
+                      ? QStringLiteral("SoundFont: %1").arg(formatSoundFontDisplay(defaultSf2))
+                      : QStringLiteral("default timidity.cfg")));
+    const QString fluidsynthSf2Summary = hasCustomSf2
+        ? QStringLiteral("SoundFont: %1").arg(formatSoundFontDisplay(customSf2))
+        : (!defaultSf2.isEmpty()
+               ? QStringLiteral("SoundFont: %1").arg(formatSoundFontDisplay(defaultSf2))
+               : QStringLiteral("no default .sf2 detected"));
+
+    const bool hasFluidsynthSf2 = hasCustomSf2
+        ? QFileInfo::exists(customSf2)
+        : !defaultSf2.isEmpty();
+
+    const QString timLabel = hasTimidity
+        ? QStringLiteral("TiMidity++ [%1]").arg(timidityExe)
+        : QStringLiteral("TiMidity++");
+    const QString fsLabel = hasFluidsynth
+        ? QStringLiteral("FluidSynth [%1]").arg(fluidsynthExe)
+        : QStringLiteral("FluidSynth");
+
+    if (mode == QLatin1String("timidity")) {
+        if (hasTimidity)
+            return QStringLiteral("%1 only — %2").arg(timLabel, timiditySf2Summary);
+        return QStringLiteral("TiMidity++ only (WARNING: 'timidity' binary not found)");
+    }
+    if (mode == QLatin1String("fluidsynth")) {
+        if (!hasFluidsynth)
+            return QStringLiteral("FluidSynth only (WARNING: 'fluidsynth' binary not found)");
+        if (!hasFluidsynthSf2)
+            return QStringLiteral("%1 only — WARNING: no valid .sf2 SoundFont found (%2)")
+                .arg(fsLabel, fluidsynthSf2Summary);
+        return QStringLiteral("%1 only — %2").arg(fsLabel, fluidsynthSf2Summary);
+    }
+    if (mode == QLatin1String("timidity_auto")) {
+        if (hasTimidity)
+            return QStringLiteral("%1 (%2)%3")
+                .arg(timLabel,
+                     timiditySf2Summary,
+                     (hasFluidsynth && hasFluidsynthSf2)
+                         ? QStringLiteral(" [fallback: FluidSynth (%1)]").arg(fluidsynthSf2Summary)
+                         : QString());
+        if (hasFluidsynth && hasFluidsynthSf2)
+            return QStringLiteral("%1 fallback (%2) [TiMidity++ not found]")
+                .arg(fsLabel, fluidsynthSf2Summary);
+        return QStringLiteral("Neither 'timidity' nor a ready 'fluidsynth' (.sf2) backend found");
+    }
+
+    /* Default "auto": FluidSynth -> TiMidity++ fallback */
+    if (hasFluidsynth && hasFluidsynthSf2) {
+        return QStringLiteral("%1 (%2)%3")
+            .arg(fsLabel,
+                 fluidsynthSf2Summary,
+                 hasTimidity ? QStringLiteral(" [fallback: TiMidity++ (%1)]").arg(timiditySf2Summary) : QString());
+    }
+    if (hasTimidity) {
+        const QString reason = !hasFluidsynth
+            ? QStringLiteral("FluidSynth not found")
+            : QStringLiteral("no .sf2 found for FluidSynth");
+        return QStringLiteral("%1 fallback (%2) [%3]")
+            .arg(timLabel, timiditySf2Summary, reason);
+    }
+    return QStringLiteral("Neither 'fluidsynth' (with .sf2) nor 'timidity' binary found");
+}
+

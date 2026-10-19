@@ -1155,11 +1155,19 @@ bool AudioConverter::convertTrack(const TrackItem &item,
             QFile::remove(tmpWavPath);
             return false;
         }
+        if (!errorMsg.isEmpty()) {
+            fallbackNotes.append(errorMsg);
+            errorMsg.clear();
+        }
     } else if (isSmaf) {
         if (!SmafConverter::decodeMmfToWav(item.sourcePath, tmpWavPath, errorMsg)) {
             std::fprintf(stderr, "[qddbconv] SMAF decode error: %s\n", errorMsg.toUtf8().constData());
             QFile::remove(tmpWavPath);
             return false;
+        }
+        if (!errorMsg.isEmpty()) {
+            fallbackNotes.append(errorMsg);
+            errorMsg.clear();
         }
     } else {
         if (!decodeInputToWavWithFallback(item, settings, tmpWavPath, cancelled, fallbackNotes, errorMsg)) {
