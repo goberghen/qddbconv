@@ -22,6 +22,8 @@ struct TrackItem {
     int sampleRate = 44100;
     int channels = 2;
     int bitsPerSample = 16;
+    int bitrateKbps = 0;
+    qint64 fileSizeBytes = 0;
     QString codecName;
 
     /* Metadata fields */

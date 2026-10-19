@@ -32,6 +32,7 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -953,13 +954,18 @@ void MainWindow::refreshTableRow(int row)
     if (!item.cuePath.isEmpty())
         srcDisplay = QStringLiteral("%1 [Track %2]").arg(QFileInfo(item.cuePath).fileName(), item.trackNumber);
 
+    QString brNote = item.bitrateKbps > 0
+        ? QStringLiteral(", %1 kbps").arg(item.bitrateKbps)
+        : QString();
+
     QString srcTooltip = item.cuePath.isEmpty()
-        ? tr("Source file: %1\nCodec: %2 (%3 Hz, %4-bit, %5 ch)\nDuration: %6 s")
+        ? tr("Source file: %1\nCodec: %2 (%3 Hz, %4-bit, %5 ch%6)\nDuration: %7 s")
               .arg(item.sourcePath,
                    item.codecName.isEmpty() ? QStringLiteral("audio") : item.codecName)
               .arg(item.sampleRate)
               .arg(item.bitsPerSample)
               .arg(item.channels)
+              .arg(brNote)
               .arg(item.durationSec, 0, 'f', 1)
         : tr("CUE sheet: %1\nAudio image: %2\nTrack %3 (%4s .. %5s)")
               .arg(item.cuePath, item.sourcePath, item.trackNumber)
@@ -1231,6 +1237,12 @@ void MainWindow::onEditTrackMetadata()
         addProp(tr("CUE Sheet"), first.cuePath);
         addProp(tr("Subtrack Range"), QStringLiteral("%1 s .. %2 s").arg(first.startSec, 0, 'f', 2).arg(first.endSec, 0, 'f', 2));
     }
+    if (first.fileSizeBytes > 0) {
+        addProp(tr("File Size"),
+                QStringLiteral("%1 (%2 bytes)")
+                    .arg(QLocale::system().formattedDataSize(first.fileSizeBytes),
+                         QLocale::system().toString(first.fileSizeBytes)));
+    }
     int mins = static_cast<int>(first.durationSec) / 60;
     int secs = static_cast<int>(first.durationSec) % 60;
     addProp(tr("Duration"), QStringLiteral("%1:%2 (%3 s)")
@@ -1238,6 +1250,7 @@ void MainWindow::onEditTrackMetadata()
                                 .arg(secs, 2, 10, QLatin1Char('0'))
                                 .arg(first.durationSec, 0, 'f', 2));
     addProp(tr("Codec"), first.codecName.isEmpty() ? QStringLiteral("Unknown") : first.codecName);
+    addProp(tr("Bitrate"), first.bitrateKbps > 0 ? QStringLiteral("%1 kbps").arg(first.bitrateKbps) : tr("Unknown"));
     addProp(tr("Sample Rate"), QStringLiteral("%1 Hz").arg(first.sampleRate));
     addProp(tr("Bits Per Sample"), QStringLiteral("%1-bit").arg(first.bitsPerSample));
     addProp(tr("Channels"), QString::number(first.channels));

@@ -262,13 +262,21 @@ TrackItem TrackProbe::probeFile(const QString &filePath)
     TrackItem item;
     QFileInfo fi(filePath);
     item.sourcePath = fi.absoluteFilePath();
+    item.fileSizeBytes = fi.size();
     item.title = fi.completeBaseName();
     item.codecName = fi.suffix().toLower();
     item.statusText = QStringLiteral("Ready");
 
+    auto computeFallbackBitrate = [&item]() {
+        if (item.bitrateKbps <= 0 && item.durationSec > 0.1 && item.fileSizeBytes > 0) {
+            item.bitrateKbps = qMax(1, static_cast<int>((item.fileSizeBytes * 8.0 / item.durationSec + 500.0) / 1000.0));
+        }
+    };
+
     /* Native probe for Yamaha SMAF (.mmf) ringtone files */
     if (SmafConverter::isSmafFile(item.sourcePath)) {
         SmafConverter::probeSmafFile(item.sourcePath, item);
+        computeFallbackBitrate();
         item.coverArtPath = findFolderCoverArt(item.sourcePath);
         return item;
     }
@@ -276,6 +284,7 @@ TrackItem TrackProbe::probeFile(const QString &filePath)
     /* Native probe for Standard MIDI (.mid/.midi/.kar/.rmi) files */
     if (SmafConverter::isMidiFile(item.sourcePath)) {
         SmafConverter::probeMidiFile(item.sourcePath, item);
+        computeFallbackBitrate();
         item.coverArtPath = findFolderCoverArt(item.sourcePath);
         return item;
     }
@@ -311,6 +320,9 @@ TrackItem TrackProbe::probeFile(const QString &filePath)
     if (fmt.contains(QStringLiteral("duration")))
         item.durationSec = fmt.value(QStringLiteral("duration")).toString().toDouble();
 
+    qint64 formatBitrateBps = fmt.value(QStringLiteral("bit_rate")).toVariant().toLongLong();
+    qint64 streamBitrateBps = 0;
+
     QJsonObject mergedTags = fmt.value(QStringLiteral("tags")).toObject();
 
     /* Inspect streams for audio parameters, stream tags, and attached cover art */
@@ -335,6 +347,8 @@ TrackItem TrackProbe::probeFile(const QString &filePath)
             if (bps > 0)
                 item.bitsPerSample = bps;
 
+            streamBitrateBps = st.value(QStringLiteral("bit_rate")).toVariant().toLongLong();
+
             QJsonObject stags = st.value(QStringLiteral("tags")).toObject();
             for (auto it = stags.begin(); it != stags.end(); ++it) {
                 if (!mergedTags.contains(it.key()))
@@ -352,6 +366,13 @@ TrackItem TrackProbe::probeFile(const QString &filePath)
             }
         }
     }
+
+    if (streamBitrateBps > 0)
+        item.bitrateKbps = static_cast<int>((streamBitrateBps + 500) / 1000);
+    else if (formatBitrateBps > 0)
+        item.bitrateKbps = static_cast<int>((formatBitrateBps + 500) / 1000);
+    else
+        computeFallbackBitrate();
 
     QString t = findTagInsensitive(mergedTags, {QStringLiteral("title")});
     if (!t.isEmpty())
@@ -631,6 +652,8 @@ static QString lookupTagField(const TrackItem &item, int index, const QString &f
         val = item.comment;
     else if (f == QLatin1String("filename") || f == QLatin1String("f"))
         val = QFileInfo(item.sourcePath).completeBaseName();
+    else if (f == QLatin1String("bitrate") && item.bitrateKbps > 0)
+        val = QString::number(item.bitrateKbps);
     else if (f == QLatin1String("list_index"))
         val = QString::number(index + 1);
 

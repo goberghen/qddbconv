@@ -5,6 +5,15 @@ This project adheres to [Semantic Versioning](https://semver.org/) (`vMAJOR.MINO
 
 ---
 
+## [v1.2.2] - 2026-10-17
+
+### Added
+- **Track bitrate & file size inspection**:
+  - Added **Bitrate** (`kbps`) and **File Size** rows to the **Properties** tab of the **Track Metadata & Properties** dialog (`Ctrl+I` / double-click), plus bitrate display in the track queue `Source` column tooltip and `%bitrate%` Title Formatting placeholder support.
+  - `TrackProbe::probeFile` extracts stream-level bitrate (`streams[].bit_rate`), falls back to container-level bitrate (`format.bit_rate`), and calculates average bitrate from file size and duration when neither is reported by `ffprobe` (or for native `.mmf`/`.mid` probes).
+
+---
+
 ## [v1.2.1] - 2026-10-17
 
 ### Added
