@@ -5,6 +5,23 @@ This project adheres to [Semantic Versioning](https://semver.org/) (`vMAJOR.MINO
 
 ---
 
+## [v1.3.0] - 2026-10-18
+
+### Added
+- **Built-in C++ Yamaha MA-2 / MA-3 / MA-5 2-op & 4-op FM Synthesizer (`src/yamaha_ma_tables.h`, `src/yamaha_ma_fm.{h,cpp}`)**:
+  - Added `YamahaMaFmSynth`, a native C++ hardware-accurate 2-operator and 4-operator FM synthesizer with all 8 Yamaha MA algorithms (`0..1` 2-op, `2..7` 4-op), 29 hardware operator waveforms (`WS 0..28`), exact 15-bit fixed-point envelope generator (Attack, Decay, Sustain, Release), LFO pitch/amplitude modulation, Key Scale Level (`KSL`), Total Level (`TL`), Detune (`DT`), Feedback (`FB`), Basic Octave (`BO`), and Panpot tables.
+  - Embedded default General MIDI 2-op and 4-op melodic and percussion FM preset banks (`kYamahaMa3Melodic2Op`, `kYamahaMa2Melodic4Op`, `kYamahaMa3Drum2Op`, `kYamahaMa2Drum4Op`, `kYamahaMaGm4OpMelodic`, `kYamahaMaGm2OpDrums`).
+  - Added full support for custom SMAF FM voice SysEx definitions in `Mtsu`, `Mtsq`, and `EXVO` chunks (`43 03` MA-2 2-op/4-op voice conversion, `43 04 01`, `43 05 01`, and `43 79 06|07 7F 01` MA-3/MA-5 FM/WaveTable/Stream voice descriptors, including 7-bit-to-8-bit `Mtsu` unpacking) as well as real-time hardware F-Number / Block / KeyOn register writes (`43 02|03 90 B<ch>/C<ch> F7`) with 49.716 kHz -> 48 kHz clock scaling.
+- **Hybrid FM + WaveTable + ADPCM/PCM SMAF (`.mmf`) Audio Engine (`src/smaf2mid.cpp`)**:
+  - Combined `YamahaMaFmSynth` (for custom FM patches, HPS FM tracks, and hardware register notes), `FluidSynth`/`TiMidity++` (for Mobile Standard GM and WaveTable channels), and the internal 14-bit-step 4-bit Yamaha MA ADPCM / 8-bit & 16-bit PCM stream renderer (`Mwa*` / `Awa*`) into a unified 32-bit internal accumulator with logarithmic dB gain staging and anti-clipping headroom protection.
+  - Pure FM and FM+ADPCM `.mmf` files synthesize directly in C++ without requiring external MIDI tools, while Mobile Standard `.mmf` files render GM instruments on `FluidSynth`/`TiMidity++` and automatically fall back to the built-in 2-op/4-op GM FM bank if neither external synthesizer is installed.
+  - Translated direct `43 02|03 90 B<ch>/C<ch>` hardware register writes into closest-frequency MIDI Note-On/Note-Off events when exporting `.mmf` files to `.mid`.
+- **Optional Native 32-bit DLL Loader (`src/smaf32_helper.c`, `qddbconv-smaf32`)**:
+  - Added `qddbconv-smaf32` (`qddbconv-smaf32.exe` on Windows), a standalone 32-bit helper that loads 32-bit `M5_EmuSmw5.dll` and `M5_EmuHw.dll` directly into memory (`mmap` + `SYS_set_thread_area` `%fs` TEB on Linux x86_64 without Wine; `VirtualAlloc` on 64-bit Windows) with calibrated master headroom (`vol = 91` and unity DAC output mode) to render `.mmf` files at 44.1 kHz 16-bit stereo without clipping.
+  - Added **SMAF (.mmf) engine** (`Auto`, `Built-in Hybrid`, `Native 32-bit DLL Loader only`), **SMAF 32-bit DLL folder**, and live **Active SMAF engine** status in **Settings -> Configure qddbconv...**, plus a **SMAF Engine** property row in **Track Metadata & Properties**.
+
+---
+
 ## [v1.2.4] - 2026-10-18
 
 ### Added

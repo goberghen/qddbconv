@@ -1255,6 +1255,8 @@ void MainWindow::onEditTrackMetadata()
     addProp(tr("Sample Rate"), QStringLiteral("%1 Hz").arg(first.sampleRate));
     addProp(tr("Bits Per Sample"), QStringLiteral("%1-bit").arg(first.bitsPerSample));
     addProp(tr("Channels"), QString::number(first.channels));
+    if (SmafConverter::isSmafFile(first.sourcePath))
+        addProp(tr("SMAF Engine"), SmafConverter::describeActiveSmafEngine());
     if (SmafConverter::isSmafFile(first.sourcePath) || SmafConverter::isMidiFile(first.sourcePath))
         addProp(tr("MIDI Synthesizer"), SmafConverter::describeActiveMidiSynth());
     if (QTableWidgetItem *outCell = m_table->item(rows.first(), 2))
@@ -1574,11 +1576,68 @@ void MainWindow::onOpenPreferences()
     connect(fluidsynthBinEdit, &QLineEdit::textChanged, &dlg, updateActiveSynthStatus);
     connect(sf2Edit, &QLineEdit::textChanged, &dlg, updateActiveSynthStatus);
 
-    midiForm->addRow(tr("Preferred synthesizer:"), midiSynthCombo);
+    QComboBox *smafEngineCombo = new QComboBox(midiGroup);
+    smafEngineCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    smafEngineCombo->addItem(tr("Auto (32-bit DLL if configured -> Built-in Hybrid fallback)"), QStringLiteral("auto"));
+    smafEngineCombo->addItem(tr("Built-in Hybrid (C++ Yamaha MA FM + WaveTable + ADPCM)"), QStringLiteral("builtin"));
+    smafEngineCombo->addItem(tr("Native 32-bit DLL Loader only (M5_EmuSmw5.dll + M5_EmuHw.dll)"), QStringLiteral("dll"));
+    const QString curSmafMode = s.value(QStringLiteral("smafEngineMode"), QStringLiteral("auto")).toString();
+    int smafIdx = smafEngineCombo->findData(curSmafMode);
+    smafEngineCombo->setCurrentIndex(smafIdx >= 0 ? smafIdx : 0);
+    smafEngineCombo->setToolTip(
+        tr("Select how Yamaha SMAF (.mmf) files are synthesized to audio:\n"
+           "• Built-in Hybrid: Native C++ Yamaha MA-2/MA-3/MA-5 2-op/4-op FM synthesizer +\n"
+           "  FluidSynth/TiMidity++ WaveTable tracks + internal ADPCM/PCM stream renderer.\n"
+           "• Native 32-bit DLL Loader: Uses qddbconv-smaf32 to load M5_EmuSmw5.dll and\n"
+           "  M5_EmuHw.dll directly in a 32-bit helper process (no Wine required on Linux)."));
+
+    QHBoxLayout *smafDllRow = new QHBoxLayout();
+    QLineEdit *smafDllDirEdit = new QLineEdit(
+        s.value(QStringLiteral("smafDllDir")).toString(), midiGroup);
+    smafDllDirEdit->setPlaceholderText(tr("Optional folder containing M5_EmuSmw5.dll and M5_EmuHw.dll"));
+    smafDllDirEdit->setToolTip(
+        tr("Optional directory containing 32-bit M5_EmuSmw5.dll and M5_EmuHw.dll.\n"
+           "Leave empty to use the built-in C++ Yamaha MA FM + WaveTable + ADPCM hybrid engine."));
+    QPushButton *browseSmafDllBtn = new QPushButton(tr("Browse..."), midiGroup);
+    connect(browseSmafDllBtn, &QPushButton::clicked, &dlg, [&dlg, smafDllDirEdit]() {
+        QString startDir = smafDllDirEdit->text().trimmed();
+        if (startDir.isEmpty() || !QFileInfo::exists(startDir))
+            startDir = QDir::homePath();
+        QString dir = QFileDialog::getExistingDirectory(
+            &dlg, tr("Select Folder Containing M5_EmuSmw5.dll and M5_EmuHw.dll"), startDir);
+        if (!dir.isEmpty())
+            smafDllDirEdit->setText(dir);
+    });
+    QPushButton *clearSmafDllBtn = new QPushButton(tr("Clear"), midiGroup);
+    clearSmafDllBtn->setToolTip(tr("Clear custom 32-bit DLL folder"));
+    connect(clearSmafDllBtn, &QPushButton::clicked, &dlg, [smafDllDirEdit]() {
+        smafDllDirEdit->clear();
+    });
+    smafDllRow->addWidget(smafDllDirEdit, 1);
+    smafDllRow->addWidget(browseSmafDllBtn);
+    smafDllRow->addWidget(clearSmafDllBtn);
+
+    QLabel *activeSmafLabel = new QLabel(midiGroup);
+    activeSmafLabel->setWordWrap(true);
+    activeSmafLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto updateActiveSmafStatus = [smafEngineCombo, smafDllDirEdit, activeSmafLabel]() {
+        const QString mode = smafEngineCombo->currentData().toString();
+        const QString dllDir = smafDllDirEdit->text().trimmed();
+        activeSmafLabel->setText(
+            SmafConverter::describeActiveSmafEngine(mode, dllDir, true));
+    };
+    updateActiveSmafStatus();
+    connect(smafEngineCombo, &QComboBox::currentIndexChanged, &dlg, updateActiveSmafStatus);
+    connect(smafDllDirEdit, &QLineEdit::textChanged, &dlg, updateActiveSmafStatus);
+
+    midiForm->addRow(tr("Preferred MIDI synthesizer:"), midiSynthCombo);
     midiForm->addRow(tr("FluidSynth binary:"), fluidsynthBinRow);
     midiForm->addRow(tr("TiMidity++ binary:"), timidityBinRow);
     midiForm->addRow(tr("SoundFont (.sf2) file:"), sf2Row);
-    midiForm->addRow(tr("Active backend:"), activeSynthLabel);
+    midiForm->addRow(tr("Active MIDI backend:"), activeSynthLabel);
+    midiForm->addRow(tr("SMAF (.mmf) engine:"), smafEngineCombo);
+    midiForm->addRow(tr("SMAF 32-bit DLL folder:"), smafDllRow);
+    midiForm->addRow(tr("Active SMAF engine:"), activeSmafLabel);
     layout->addWidget(midiGroup);
 
     /* 2. Cover Art & File Copy Group */
@@ -1650,6 +1709,12 @@ void MainWindow::onOpenPreferences()
             s.remove(QStringLiteral("midiSoundFontPath"));
         else
             s.setValue(QStringLiteral("midiSoundFontPath"), newSf2);
+        s.setValue(QStringLiteral("smafEngineMode"), smafEngineCombo->currentData().toString());
+        const QString newSmafDllDir = smafDllDirEdit->text().trimmed();
+        if (newSmafDllDir.isEmpty())
+            s.remove(QStringLiteral("smafDllDir"));
+        else
+            s.setValue(QStringLiteral("smafDllDir"), newSmafDllDir);
         m_resizeCoverArt = resizeCoverCheck->isChecked();
         m_maxCoverSizePx = maxCoverSpin->value();
         m_retagAfterCopy = retagAfterCopyCheck->isChecked();

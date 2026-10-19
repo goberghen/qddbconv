@@ -92,20 +92,20 @@ tracker modules (\fB.mod\fR, \fB.xm\fR, \fB.it\fR, \fB.s3m\fR, \fB.mptm\fR, etc.
 \fBgme2wav\fR for console chiptunes (\fB.spc\fR, \fB.vgm\fR, \fB.vgz\fR, \fB.nsf\fR, \fB.gbs\fR,
 \fB.hes\fR, \fB.ay\fR, \fB.sap\fR, \fB.kss\fR).
 .TP
-.B MIDI & Yamaha SMAF Synthesizer Priority & SoundFont Selection
-For Standard MIDI (\fB.mid\fR, \fB.kar\fR, \fB.rmi\fR) and the musical score tracks (\fBMTR\fR/\fBMtsq\fR)
-of Yamaha SMAF (\fB.mmf\fR) files, \fBqddbconv\fR synthesizes MIDI events to 44.1 kHz stereo PCM
-before mixing any embedded SMAF ADPCM/PCM stream waves. By default (\fBAuto\fR mode), \fBfluidsynth\fR
-is tried first (requiring a valid \fB.sf2\fR/\fB.sf3\fR SoundFont) and \fBtimidity\fR is used as an
-automatic fallback. In \fBSettings \(-> Configure qddbconv...\fR,
-you can select the preferred synthesizer (\fBAuto: FluidSynth \(-> TiMidity++\fR,
-\fBTiMidity++ \(-> FluidSynth\fR, \fBFluidSynth only\fR, or \fBTiMidity++ only\fR), custom
-\fBfluidsynth\fR and \fBtimidity\fR binary paths, and an optional custom \fB.sf2\fR SoundFont file
+.B MIDI & Yamaha SMAF Synthesis Engines & SoundFont Selection
+For Yamaha SMAF (\fB.mmf\fR) files, \fBqddbconv\fR provides two synthesis engines configurable in
+\fBSettings \(-> Configure qddbconv...\fR:
+(1) the \fBBuilt-in Hybrid Engine\fR, which synthesizes 2-op and 4-op FM voices, custom \fBMtsu\fR/\fBMtsq\fR/\fBEXVO\fR
+SysEx FM patches, and direct \fB43 02|03 90\fR hardware register notes natively in C++ (\fBYamahaMaFmSynth\fR with 29 waveforms
+and embedded 2-op/4-op GM FM preset banks), synthesizes MA-3/MA-5 WaveTable tracks via \fBfluidsynth\fR or \fBtimidity\fR,
+and mixes embedded 4-bit Yamaha ADPCM / PCM (\fBMwa*\fR/\fBAwa*\fR) streams into 44.1 kHz stereo PCM; and
+(2) an optional \fBNative 32-bit DLL Loader\fR (\fBqddbconv-smaf32\fR), which loads 32-bit \fBM5_EmuSmw5.dll\fR and
+\fBM5_EmuHw.dll\fR directly into a 32-bit helper process (natively on Linux x86_64 without Wine, and on 64-bit Windows) when a
+directory containing those DLLs is configured.
+For Standard MIDI (\fB.mid\fR, \fB.kar\fR, \fB.rmi\fR) and SMAF WaveTable tracks, \fBAuto\fR mode tries \fBfluidsynth\fR
+first (requiring a valid \fB.sf2\fR/\fB.sf3\fR SoundFont) and falls back to \fBtimidity\fR. You can configure the preferred
+MIDI synthesizer, custom \fBfluidsynth\fR and \fBtimidity\fR binary paths, and an optional custom \fB.sf2\fR SoundFont file
 (passed to \fBfluidsynth\fR and loaded into \fBtimidity \-c\fR with prior bank/drumset mappings cleared).
-When no custom SoundFont is set, \fBqddbconv\fR checks portable application/synthesizer folders
-(\fI./soundfonts\fR, \fI./sf2\fR, \fI./tools\fR), \fI/usr/share/sounds/sf2/default-GM.sf2\fR,
-\fI/usr/share/soundfonts/default.sf2\fR, and \fIFluidR3_GM.sf2\fR for FluidSynth, and
-\fI/etc/timidity/timidity.cfg\fR (or \fIC:\\timidity\\timidity.cfg\fR on Windows) for TiMidity++.
 .SH TITLE FORMATTING
 The
 .B Output file name

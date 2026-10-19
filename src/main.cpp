@@ -72,7 +72,7 @@ int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("qddbconv"));
-    app.setApplicationVersion(QStringLiteral("1.2.4"));
+    app.setApplicationVersion(QStringLiteral("1.3.0"));
 
     QIcon appIcon = createAppIcon();
     app.setWindowIcon(appIcon);

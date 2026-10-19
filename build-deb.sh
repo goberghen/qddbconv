@@ -20,6 +20,9 @@ echo "[1/3] Compiling qddbconv..."
 cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build "$BUILD_DIR" -j"$(nproc)"
 strip --strip-unneeded "$BUILD_DIR/qddbconv"
+if [ -f "$BUILD_DIR/qddbconv-smaf32" ]; then
+    strip --strip-unneeded "$BUILD_DIR/qddbconv-smaf32" || true
+fi
 
 echo "[2/3] Staging package files..."
 DESTDIR="$STAGE_DIR" cmake --install "$BUILD_DIR"

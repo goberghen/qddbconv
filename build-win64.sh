@@ -45,6 +45,7 @@ SRCS=(
     "$SCRIPT_DIR/src/main.cpp"
     "$SCRIPT_DIR/src/preset.cpp"
     "$SCRIPT_DIR/src/track.cpp"
+    "$SCRIPT_DIR/src/yamaha_ma_fm.cpp"
     "$SCRIPT_DIR/src/smaf2mid.cpp"
     "$SCRIPT_DIR/src/converter.cpp"
     "$SCRIPT_DIR/src/mainwindow.cpp"
@@ -67,6 +68,12 @@ done
     -o "$PKG_DIR/qddbconv.exe"
 
 "$STRIP" --strip-unneeded "$PKG_DIR/qddbconv.exe"
+
+if command -v i686-w64-mingw32-gcc-posix >/dev/null 2>&1; then
+    echo "[3b/4] Cross-compiling 32-bit qddbconv-smaf32.exe helper..."
+    i686-w64-mingw32-gcc-posix -O2 -static "$SCRIPT_DIR/src/smaf32_helper.c" -o "$PKG_DIR/qddbconv-smaf32.exe"
+    i686-w64-mingw32-strip --strip-unneeded "$PKG_DIR/qddbconv-smaf32.exe" || true
+fi
 
 echo "[4/4] Assembling Qt6 runtime, plugins, and audio encoders into $OUT_ZIP..."
 # Core Qt6 DLLs

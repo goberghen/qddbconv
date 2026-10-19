@@ -56,6 +56,11 @@ public:
                                            bool useOverrides = false,
                                            const QString &timidityBinOverride = QString(),
                                            const QString &fluidsynthBinOverride = QString());
+
+    /* Returns a human-readable summary of the active SMAF (.mmf) synthesis engine */
+    static QString describeActiveSmafEngine(const QString &smafModeOverride = QString(),
+                                            const QString &smafDllDirOverride = QString(),
+                                            bool useOverrides = false);
 };
 
 #endif /* QDDBCONV_SMAF2MID_H */

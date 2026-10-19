@@ -28,9 +28,15 @@ echo "[1/5] Compiling qddbconv (Release)..."
 cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build "$BUILD_DIR" -j"$(nproc)"
 strip --strip-unneeded "$BUILD_DIR/qddbconv"
+if [ -f "$BUILD_DIR/qddbconv-smaf32" ]; then
+    strip --strip-unneeded "$BUILD_DIR/qddbconv-smaf32" || true
+fi
 
 echo "[2/5] Populating AppDir..."
 cp "$BUILD_DIR/qddbconv" "$APPDIR/usr/bin/qddbconv"
+if [ -f "$BUILD_DIR/qddbconv-smaf32" ]; then
+    cp "$BUILD_DIR/qddbconv-smaf32" "$APPDIR/usr/bin/qddbconv-smaf32"
+fi
 cp "$SCRIPT_DIR/qddbconv.desktop" "$APPDIR/qddbconv.desktop"
 cp "$SCRIPT_DIR/qddbconv.desktop" "$APPDIR/usr/share/applications/qddbconv.desktop"
 cp "$SCRIPT_DIR/qddbconv.svg" "$APPDIR/qddbconv.svg"
