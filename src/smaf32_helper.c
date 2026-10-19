@@ -882,7 +882,7 @@ int main(int argc, char **argv) {
             fwrite(stereo, sizeof(int16_t), 882, wf);
             total_frames += 441;
             if (g_eof_reached) {
-                for (int t = 0; t < 20; ++t) {
+                for (int t = 0; t < 15; ++t) {
                     memset(bufL, 0, sizeof(bufL));
                     memset(bufR, 0, sizeof(bufR));
                     Generate(bufL, bufR, 441);

@@ -107,9 +107,15 @@ cp -L "$QT_WIN_DIR/plugins/iconengines/qsvgicon.dll" "$PKG_DIR/iconengines/"
 # Bundle CLI audio encoders, FFmpeg/FFprobe, and tracker/chiptune decoders if present in $WIN_ENC_DIR
 if [ -d "$WIN_ENC_DIR" ]; then
     for f in \
-        ffmpeg.exe ffprobe.exe openmpt123.exe gme2wav.exe \
-        avcodec-61.dll avfilter-10.dll avformat-61.dll avutil-59.dll swresample-5.dll swscale-8.dll zlib1.dll \
-        libopenmpt-0.dll libmpg123-0.dll libvorbisfile-3.dll \
+        ffmpeg.exe ffprobe.exe \
+        avcodec-61.dll avdevice-61.dll avfilter-10.dll avformat-61.dll avutil-59.dll swresample-5.dll swscale-8.dll; do
+        if [ -f "$WIN_ENC_DIR/$f" ]; then
+            cp -L "$WIN_ENC_DIR/$f" "$PKG_DIR/"
+        fi
+    done
+    for f in \
+        openmpt123.exe gme2wav.exe zlib1.dll \
+        libopenmpt-0.dll libportaudio.dll libsndfile-1.dll libmpg123-0.dll libvorbisfile-3.dll \
         flac.exe metaflac.exe lame.exe oggenc.exe opusenc.exe wavpack.exe \
         libFLAC.dll libmp3lame-0.dll libogg-0.dll libopus-0.dll libopusenc-0.dll \
         libvorbis-0.dll libvorbisenc-2.dll libwavpack-1.dll libiconv-2.dll; do

@@ -1580,14 +1580,20 @@ void MainWindow::onOpenPreferences()
     smafEngineCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     smafEngineCombo->addItem(tr("Auto (32-bit DLL if configured -> Built-in Hybrid fallback)"), QStringLiteral("auto"));
     smafEngineCombo->addItem(tr("Built-in Hybrid (C++ Yamaha MA FM + WaveTable + ADPCM)"), QStringLiteral("builtin"));
+    smafEngineCombo->addItem(tr("MIDI Synth + ADPCM (FluidSynth / TiMidity++ + ADPCM)"), QStringLiteral("midisynth"));
     smafEngineCombo->addItem(tr("Native 32-bit DLL Loader only (M5_EmuSmw5.dll + M5_EmuHw.dll)"), QStringLiteral("dll"));
     const QString curSmafMode = s.value(QStringLiteral("smafEngineMode"), QStringLiteral("auto")).toString();
     int smafIdx = smafEngineCombo->findData(curSmafMode);
     smafEngineCombo->setCurrentIndex(smafIdx >= 0 ? smafIdx : 0);
     smafEngineCombo->setToolTip(
         tr("Select how Yamaha SMAF (.mmf) files are synthesized to audio:\n"
+           "• Auto: Uses the 32-bit DLL loader (qddbconv-smaf32) when a folder containing\n"
+           "  M5_EmuSmw5.dll and M5_EmuHw.dll is configured, falling back automatically to\n"
+           "  the Built-in Hybrid engine.\n"
            "• Built-in Hybrid: Native C++ Yamaha MA-2/MA-3/MA-5 2-op/4-op FM synthesizer +\n"
            "  FluidSynth/TiMidity++ WaveTable tracks + internal ADPCM/PCM stream renderer.\n"
+           "• MIDI Synth + ADPCM: Renders all score tracks via FluidSynth / TiMidity++\n"
+           "  and mixes 4-bit Yamaha ADPCM / PCM stream audio on top.\n"
            "• Native 32-bit DLL Loader: Uses qddbconv-smaf32 to load M5_EmuSmw5.dll and\n"
            "  M5_EmuHw.dll directly in a 32-bit helper process (no Wine required on Linux)."));
 

@@ -60,9 +60,9 @@ MOD/XM/IT/S3M (\fB.mod\fR, \fB.xm\fR, \fB.it\fR, \fB.s3m\fR), SID, NSF, SPC, VGM
 .B Video Containers (Audio Track Extraction)
 Matroska (\fB.mkv\fR), WebM (\fB.webm\fR), MP4 (\fB.mp4\fR, \fB.m4v\fR),
 AVI (\fB.avi\fR), MOV (\fB.mov\fR), FLV (\fB.flv\fR), MPEG-TS (\fB.ts\fR).
-.SS Output Formats (28 Built-in Presets + User Presets)
-MP3 (LAME CBR 320, VBR V0, VBR V2, FFmpeg libmp3lame), Ogg Vorbis (\fBoggenc\fR / FFmpeg libvorbis),
-Opus (\fBopusenc\fR 128/192 kbps / FFmpeg libopus), FLAC (\fBflac\fR levels 5 and 8 / FFmpeg),
+.SS Output Formats (36 Built-in Presets + User Presets)
+MP3 (LAME & FFmpeg \fBlibmp3lame\fR CBR 320/256/192/128 kbps, VBR V0, VBR V2), Ogg Vorbis (\fBoggenc\fR / FFmpeg libvorbis),
+Opus (\fBopusenc\fR 96\(en320 kbps / FFmpeg libopus), FLAC (\fBflac\fR levels 5 and 8 / FFmpeg),
 AAC / M4A (FFmpeg native AAC 192/256 kbps, \fBfaac\fR, \fBfdkaac\fR), Apple Lossless (ALAC \fB.m4a\fR),
 WavPack (\fBwavpack\fR / FFmpeg), Musepack (\fBmpcenc\fR), Monkey's Audio (\fBmac\fR),
 TTA (\fBttaenc\fR), Uncompressed WAV (16-bit PCM, 32-bit float), AIFF (16-bit big-endian),
@@ -93,15 +93,17 @@ tracker modules (\fB.mod\fR, \fB.xm\fR, \fB.it\fR, \fB.s3m\fR, \fB.mptm\fR, etc.
 \fB.hes\fR, \fB.ay\fR, \fB.sap\fR, \fB.kss\fR).
 .TP
 .B MIDI & Yamaha SMAF Synthesis Engines & SoundFont Selection
-For Yamaha SMAF (\fB.mmf\fR) files, \fBqddbconv\fR provides two synthesis engines configurable in
-\fBSettings \(-> Configure qddbconv...\fR:
-(1) the \fBBuilt-in Hybrid Engine\fR, which synthesizes 2-op and 4-op FM voices, custom \fBMtsu\fR/\fBMtsq\fR/\fBEXVO\fR
+For Yamaha SMAF (\fB.mmf\fR) files, \fBqddbconv\fR provides three selectable synthesis engines (plus \fBAuto\fR mode)
+configurable in \fBSettings \(-> Configure qddbconv...\fR:
+(1) the \fBBuilt-in Hybrid Engine\fR (\fBbuiltin\fR), which synthesizes 2-op and 4-op FM voices, custom \fBMtsu\fR/\fBMtsq\fR/\fBEXVO\fR
 SysEx FM patches, and direct \fB43 02|03 90\fR hardware register notes natively in C++ (\fBYamahaMaFmSynth\fR with 29 waveforms
 and embedded 2-op/4-op GM FM preset banks), synthesizes MA-3/MA-5 WaveTable tracks via \fBfluidsynth\fR or \fBtimidity\fR,
-and mixes embedded 4-bit Yamaha ADPCM / PCM (\fBMwa*\fR/\fBAwa*\fR) streams into 44.1 kHz stereo PCM; and
-(2) an optional \fBNative 32-bit DLL Loader\fR (\fBqddbconv-smaf32\fR), which loads 32-bit \fBM5_EmuSmw5.dll\fR and
-\fBM5_EmuHw.dll\fR directly into a 32-bit helper process (natively on Linux x86_64 without Wine, and on 64-bit Windows) when a
-directory containing those DLLs is configured.
+and mixes embedded 4-bit Yamaha ADPCM / PCM (\fBMwa*\fR/\fBAwa*\fR) streams into 44.1 kHz stereo PCM;
+(2) \fBMIDI Synth + ADPCM\fR (\fBmidisynth\fR), which renders all score tracks via \fBfluidsynth\fR or \fBtimidity\fR
+and mixes embedded 4-bit Yamaha ADPCM / PCM (\fBMwa*\fR/\fBAwa*\fR) streams on top; and
+(3) an optional \fBNative 32-bit DLL Loader\fR (\fBdll\fR, \fBqddbconv-smaf32\fR), which loads 32-bit \fBM5_EmuSmw5.dll\fR and
+\fBM5_EmuHw.dll\fR directly into a 32-bit helper process (natively on Linux x86_64
+without Wine, and on 64-bit Windows) when a directory containing those DLLs is configured.
 For Standard MIDI (\fB.mid\fR, \fB.kar\fR, \fB.rmi\fR) and SMAF WaveTable tracks, \fBAuto\fR mode tries \fBfluidsynth\fR
 first (requiring a valid \fB.sf2\fR/\fB.sf3\fR SoundFont) and falls back to \fBtimidity\fR. You can configure the preferred
 MIDI synthesizer, custom \fBfluidsynth\fR and \fBtimidity\fR binary paths, and an optional custom \fB.sf2\fR SoundFont file

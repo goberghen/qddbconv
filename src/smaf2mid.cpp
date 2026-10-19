@@ -1508,6 +1508,7 @@ static QString configuredSmafEngineMode(const QString &overrideMode = QString(),
         mode = s.value(QStringLiteral("smafEngineMode"), QStringLiteral("auto")).toString().trimmed().toLower();
     }
     if (mode != QLatin1String("builtin") &&
+        mode != QLatin1String("midisynth") &&
         mode != QLatin1String("dll") &&
         mode != QLatin1String("auto")) {
         return QStringLiteral("auto");
@@ -2698,112 +2699,142 @@ bool SmafConverter::decodeMmfToWav(const QString &mmfPath,
     };
 
     const bool hasWtSynth = hasAvailableMidiSynthBackend();
+    const bool useMidiSynthOnly = (smafMode == QLatin1String("midisynth"));
     QString midiFallbackNote;
 
-    /* 1a. Partition MIDI events so WaveTable-only channels/voices render on FluidSynth/TiMidity++
-     *     while FM channels/voices and hardware register notes render on the built-in C++ YamahaMaFmSynth. */
-    if (!smaf.midiEvents.empty() && hasWtSynth) {
-        YamahaMaFmSynth wtProbe(outRate, smaf.hasHpsTracks);
-        size_t fmIdx = 0;
-        std::vector<MidiTimedEvent> wtEvents;
-        wtEvents.reserve(smaf.midiEvents.size());
-        bool wtActiveNote[16][128] = {};
-        size_t wtNoteCount = 0;
-
-        for (const MidiTimedEvent &ev : smaf.midiEvents) {
-            while (fmIdx < smaf.fmEvents.size() &&
-                   (smaf.fmEvents[fmIdx].tickMs < ev.tickMs ||
-                    (smaf.fmEvents[fmIdx].tickMs == ev.tickMs && smaf.fmEvents[fmIdx].priority <= 0))) {
-                if (smaf.fmEvents[fmIdx].type != SmafFmEventType::NoteOn &&
-                    smaf.fmEvents[fmIdx].type != SmafFmEventType::NoteOff &&
-                    smaf.fmEvents[fmIdx].type != SmafFmEventType::RegC0) {
-                    applyFmTimedEvent(wtProbe, smaf.fmEvents[fmIdx], true);
-                }
-                ++fmIdx;
+    if (useMidiSynthOnly) {
+        /* MIDI Synth + ADPCM mode (v1.2.4 method): render all MIDI score events via
+         * FluidSynth / TiMidity++ (with Mtsu FM-patch-to-GM instrument/drum remapping),
+         * then mix embedded ADPCM/PCM stream waves on top. */
+        if (!smaf.midiEvents.empty()) {
+            if (!hasWtSynth) {
+                errorMsg = QStringLiteral("MIDI Synth + ADPCM mode requires FluidSynth (with a valid .sf2 SoundFont) or TiMidity++.");
+                return false;
             }
-
-            uint8_t hi = ev.status & 0xF0;
-            if (hi == 0x90 && ev.data2 > 0) {
-                if (ev.isHardwareRegNote)
-                    continue;
-                int fch = (ev.fmCh >= 0 && ev.fmCh < 16) ? ev.fmCh : (ev.status & 0x0F);
-                uint8_t onote = (ev.origNote >= 0 && ev.origNote < 128) ? static_cast<uint8_t>(ev.origNote) : ev.data1;
-                if (!wtProbe.shouldRenderOnFm(fch, onote, true)) {
-                    wtActiveNote[fch][onote] = true;
-                    wtEvents.push_back(ev);
-                    ++wtNoteCount;
-                }
-            } else if (hi == 0x80 || (hi == 0x90 && ev.data2 == 0)) {
-                if (ev.isHardwareRegNote)
-                    continue;
-                int fch = (ev.fmCh >= 0 && ev.fmCh < 16) ? ev.fmCh : (ev.status & 0x0F);
-                uint8_t onote = (ev.origNote >= 0 && ev.origNote < 128) ? static_cast<uint8_t>(ev.origNote) : ev.data1;
-                if (wtActiveNote[fch][onote]) {
-                    wtActiveNote[fch][onote] = false;
-                    wtEvents.push_back(ev);
-                }
-            } else {
-                wtEvents.push_back(ev);
-            }
-        }
-
-        if (wtNoteCount > 0) {
-            QTemporaryFile tmpMid(QFileInfo(wavPath).absolutePath() + QLatin1String("/qddbconv_smaf_wt_XXXXXX.mid"));
+            QTemporaryFile tmpMid(QFileInfo(wavPath).absolutePath() + QLatin1String("/qddbconv_smaf_midi_XXXXXX.mid"));
             if (tmpMid.open()) {
                 QString midFile = tmpMid.fileName();
                 tmpMid.close();
-                if (writeFilteredMidiEventsToFile(smaf, wtEvents, mmfPath, midFile)) {
+                if (writeFilteredMidiEventsToFile(smaf, smaf.midiEvents, mmfPath, midFile)) {
                     QString synthErr;
                     if (synthesizeMidiWithConfiguredBackends(midFile, wavPath, static_cast<int>(outRate),
                                                              60000, midiFallbackNote, synthErr)) {
                         renderedMidi = loadRenderedWavIntoMix();
+                    } else {
+                        QFile::remove(midFile);
+                        errorMsg = synthErr;
+                        return false;
                     }
                 }
                 QFile::remove(midFile);
             }
         }
-    }
+    } else {
+        /* 1a. Partition MIDI events so WaveTable-only channels/voices render on FluidSynth/TiMidity++
+         *     while FM channels/voices and hardware register notes render on the built-in C++ YamahaMaFmSynth. */
+        if (!smaf.midiEvents.empty() && hasWtSynth) {
+            YamahaMaFmSynth wtProbe(outRate, smaf.hasHpsTracks);
+            size_t fmIdx = 0;
+            std::vector<MidiTimedEvent> wtEvents;
+            wtEvents.reserve(smaf.midiEvents.size());
+            bool wtActiveNote[16][128] = {};
+            size_t wtNoteCount = 0;
 
-    /* 1b. Render all FM channels/voices (MA-2/MA-3/MA-5 custom SysEx patches, default FM banks,
-     *     and direct 43 02|03 90 B0/C0 hardware register writes) via built-in C++ YamahaMaFmSynth. */
-    if (!smaf.fmEvents.empty()) {
-        const bool wtAvailableForFm = renderedMidi;
-        uint64_t totalFmMs = smaf.durationMs;
-        if (totalFmMs == 0 && !smaf.fmEvents.empty())
-            totalFmMs = smaf.fmEvents.back().tickMs + 500;
-
-        size_t totalFmFrames = static_cast<size_t>((totalFmMs * outRate) / 1000ULL) + (outRate / 5);
-        if (totalFmFrames > 0) {
-            YamahaMaFmSynth fmSynth(outRate, smaf.hasHpsTracks);
-            std::vector<int16_t> fmStereo(totalFmFrames * 2, 0);
-            size_t curFrame = 0;
-            bool anyFmTriggered = false;
-
-            for (const SmafFmTimedEvent &fev : smaf.fmEvents) {
-                size_t eventFrame = std::min(totalFmFrames, static_cast<size_t>((fev.tickMs * outRate) / 1000ULL));
-                if (eventFrame > curFrame) {
-                    fmSynth.renderAndMix(fmStereo.data() + curFrame * 2, eventFrame - curFrame);
-                    curFrame = eventFrame;
+            for (const MidiTimedEvent &ev : smaf.midiEvents) {
+                while (fmIdx < smaf.fmEvents.size() &&
+                       (smaf.fmEvents[fmIdx].tickMs < ev.tickMs ||
+                        (smaf.fmEvents[fmIdx].tickMs == ev.tickMs && smaf.fmEvents[fmIdx].priority <= 0))) {
+                    if (smaf.fmEvents[fmIdx].type != SmafFmEventType::NoteOn &&
+                        smaf.fmEvents[fmIdx].type != SmafFmEventType::NoteOff &&
+                        smaf.fmEvents[fmIdx].type != SmafFmEventType::RegC0) {
+                        applyFmTimedEvent(wtProbe, smaf.fmEvents[fmIdx], true);
+                    }
+                    ++fmIdx;
                 }
-                if (fev.type == SmafFmEventType::RegC0 && (fev.param1 & 0x20) != 0)
-                    anyFmTriggered = true;
-                else if (fev.type == SmafFmEventType::NoteOn &&
-                         fmSynth.shouldRenderOnFm(fev.ch, static_cast<uint8_t>(fev.param1), wtAvailableForFm))
-                    anyFmTriggered = true;
 
-                applyFmTimedEvent(fmSynth, fev, wtAvailableForFm);
+                uint8_t hi = ev.status & 0xF0;
+                if (hi == 0x90 && ev.data2 > 0) {
+                    if (ev.isHardwareRegNote)
+                        continue;
+                    int fch = (ev.fmCh >= 0 && ev.fmCh < 16) ? ev.fmCh : (ev.status & 0x0F);
+                    uint8_t onote = (ev.origNote >= 0 && ev.origNote < 128) ? static_cast<uint8_t>(ev.origNote) : ev.data1;
+                    if (!wtProbe.shouldRenderOnFm(fch, onote, true)) {
+                        wtActiveNote[fch][onote] = true;
+                        wtEvents.push_back(ev);
+                        ++wtNoteCount;
+                    }
+                } else if (hi == 0x80 || (hi == 0x90 && ev.data2 == 0)) {
+                    if (ev.isHardwareRegNote)
+                        continue;
+                    int fch = (ev.fmCh >= 0 && ev.fmCh < 16) ? ev.fmCh : (ev.status & 0x0F);
+                    uint8_t onote = (ev.origNote >= 0 && ev.origNote < 128) ? static_cast<uint8_t>(ev.origNote) : ev.data1;
+                    if (wtActiveNote[fch][onote]) {
+                        wtActiveNote[fch][onote] = false;
+                        wtEvents.push_back(ev);
+                    }
+                } else {
+                    wtEvents.push_back(ev);
+                }
             }
-            if (curFrame < totalFmFrames)
-                fmSynth.renderAndMix(fmStereo.data() + curFrame * 2, totalFmFrames - curFrame);
 
-            if (anyFmTriggered) {
-                if (stereoMix32.size() < fmStereo.size())
-                    stereoMix32.resize(fmStereo.size(), 0);
-                for (size_t i = 0; i < fmStereo.size(); ++i)
-                    stereoMix32[i] += static_cast<int32_t>(fmStereo[i]);
-                renderedFm = true;
-                std::fprintf(stdout, "[qddbconv] Synthesized SMAF FM score via built-in C++ YamahaMaFmSynth\n");
-                std::fflush(stdout);
+            if (wtNoteCount > 0) {
+                QTemporaryFile tmpMid(QFileInfo(wavPath).absolutePath() + QLatin1String("/qddbconv_smaf_wt_XXXXXX.mid"));
+                if (tmpMid.open()) {
+                    QString midFile = tmpMid.fileName();
+                    tmpMid.close();
+                    if (writeFilteredMidiEventsToFile(smaf, wtEvents, mmfPath, midFile)) {
+                        QString synthErr;
+                        if (synthesizeMidiWithConfiguredBackends(midFile, wavPath, static_cast<int>(outRate),
+                                                                 60000, midiFallbackNote, synthErr)) {
+                            renderedMidi = loadRenderedWavIntoMix();
+                        }
+                    }
+                    QFile::remove(midFile);
+                }
+            }
+        }
+
+        /* 1b. Render all FM channels/voices (MA-2/MA-3/MA-5 custom SysEx patches, default FM banks,
+         *     and direct 43 02|03 90 B0/C0 hardware register writes) via built-in C++ YamahaMaFmSynth. */
+        if (!smaf.fmEvents.empty()) {
+            const bool wtAvailableForFm = renderedMidi;
+            uint64_t totalFmMs = smaf.durationMs;
+            if (totalFmMs == 0 && !smaf.fmEvents.empty())
+                totalFmMs = smaf.fmEvents.back().tickMs + 500;
+
+            size_t totalFmFrames = static_cast<size_t>((totalFmMs * outRate) / 1000ULL) + (outRate / 5);
+            if (totalFmFrames > 0) {
+                YamahaMaFmSynth fmSynth(outRate, smaf.hasHpsTracks);
+                std::vector<int16_t> fmStereo(totalFmFrames * 2, 0);
+                size_t curFrame = 0;
+                bool anyFmTriggered = false;
+
+                for (const SmafFmTimedEvent &fev : smaf.fmEvents) {
+                    size_t eventFrame = std::min(totalFmFrames, static_cast<size_t>((fev.tickMs * outRate) / 1000ULL));
+                    if (eventFrame > curFrame) {
+                        fmSynth.renderAndMix(fmStereo.data() + curFrame * 2, eventFrame - curFrame);
+                        curFrame = eventFrame;
+                    }
+                    if (fev.type == SmafFmEventType::RegC0 && (fev.param1 & 0x20) != 0)
+                        anyFmTriggered = true;
+                    else if (fev.type == SmafFmEventType::NoteOn &&
+                             fmSynth.shouldRenderOnFm(fev.ch, static_cast<uint8_t>(fev.param1), wtAvailableForFm))
+                        anyFmTriggered = true;
+
+                    applyFmTimedEvent(fmSynth, fev, wtAvailableForFm);
+                }
+                if (curFrame < totalFmFrames)
+                    fmSynth.renderAndMix(fmStereo.data() + curFrame * 2, totalFmFrames - curFrame);
+
+                if (anyFmTriggered) {
+                    if (stereoMix32.size() < fmStereo.size())
+                        stereoMix32.resize(fmStereo.size(), 0);
+                    for (size_t i = 0; i < fmStereo.size(); ++i)
+                        stereoMix32[i] += static_cast<int32_t>(fmStereo[i]);
+                    renderedFm = true;
+                    std::fprintf(stdout, "[qddbconv] Synthesized SMAF FM score via built-in C++ YamahaMaFmSynth\n");
+                    std::fflush(stdout);
+                }
             }
         }
     }
@@ -3269,9 +3300,16 @@ QString SmafConverter::describeActiveSmafEngine(const QString &smafModeOverride,
     const bool hasDlls = !resolvedDir.isEmpty();
 
     const QString builtinDesc = QStringLiteral("Built-in Hybrid (C++ Yamaha MA-2/MA-3/MA-5 FM + WaveTable + ADPCM)");
+    const QString midiSynthDesc = QStringLiteral("MIDI Synth + ADPCM (FluidSynth / TiMidity++ + ADPCM)");
 
     if (mode == QLatin1String("builtin"))
         return builtinDesc;
+
+    if (mode == QLatin1String("midisynth")) {
+        if (!hasAvailableMidiSynthBackend())
+            return QStringLiteral("%1 — WARNING: neither FluidSynth (with .sf2) nor TiMidity++ is ready").arg(midiSynthDesc);
+        return midiSynthDesc;
+    }
 
     if (mode == QLatin1String("dll")) {
         if (!hasHelper)

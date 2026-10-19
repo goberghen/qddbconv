@@ -183,16 +183,48 @@ QList<EncoderPreset> PresetManager::builtinPresets()
         "lame -q4 -b320 - %o",
         DDB_ENCODER_METHOD_PIPE, true, true, false, false, false, false, 0);
 
-    add("MP3 VBR 192 Kbps / V2 (Lame)", "mp3",
-        "lame -V2 - %o",
+    add("MP3 CBR 256 Kbps (Lame)", "mp3",
+        "lame -q4 -b256 - %o",
+        DDB_ENCODER_METHOD_PIPE, true, true, false, false, false, false, 0);
+
+    add("MP3 CBR 192 Kbps (Lame)", "mp3",
+        "lame -q4 -b192 - %o",
         DDB_ENCODER_METHOD_PIPE, true, true, false, false, false, false, 0);
 
     add("MP3 CBR 128 Kbps (Lame)", "mp3",
         "lame -b128 - %o",
         DDB_ENCODER_METHOD_PIPE, true, true, false, false, false, false, 0);
 
+    add("MP3 VBR V0 (~245 Kbps) (Lame)", "mp3",
+        "lame -V0 - %o",
+        DDB_ENCODER_METHOD_PIPE, true, true, false, false, false, false, 0);
+
+    add("MP3 VBR V2 (~192 Kbps) (Lame)", "mp3",
+        "lame -V2 - %o",
+        DDB_ENCODER_METHOD_PIPE, true, true, false, false, false, false, 0);
+
     add("MP3 CBR 320 Kbps (FFmpeg)", "mp3",
         "ffmpeg -y -i %i -c:a libmp3lame -b:a 320k %o",
+        DDB_ENCODER_METHOD_FILE, true, true, false, false, false, false, 0);
+
+    add("MP3 CBR 256 Kbps (FFmpeg)", "mp3",
+        "ffmpeg -y -i %i -c:a libmp3lame -b:a 256k %o",
+        DDB_ENCODER_METHOD_FILE, true, true, false, false, false, false, 0);
+
+    add("MP3 CBR 192 Kbps (FFmpeg)", "mp3",
+        "ffmpeg -y -i %i -c:a libmp3lame -b:a 192k %o",
+        DDB_ENCODER_METHOD_FILE, true, true, false, false, false, false, 0);
+
+    add("MP3 CBR 128 Kbps (FFmpeg)", "mp3",
+        "ffmpeg -y -i %i -c:a libmp3lame -b:a 128k %o",
+        DDB_ENCODER_METHOD_FILE, true, true, false, false, false, false, 0);
+
+    add("MP3 VBR V0 (~245 Kbps) (FFmpeg)", "mp3",
+        "ffmpeg -y -i %i -c:a libmp3lame -q:a 0 %o",
+        DDB_ENCODER_METHOD_FILE, true, true, false, false, false, false, 0);
+
+    add("MP3 VBR V2 (~192 Kbps) (FFmpeg)", "mp3",
+        "ffmpeg -y -i %i -c:a libmp3lame -q:a 2 %o",
         DDB_ENCODER_METHOD_FILE, true, true, false, false, false, false, 0);
 
     add("Opus 96 Kbps (opusenc)", "opus",

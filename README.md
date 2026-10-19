@@ -9,7 +9,7 @@
   - Full Menubar with **Dolphin-style Hamburger Menu toggle (`Ctrl+M`)** and customizable **Toolbar Text Position** (*Icons Only*, *Text Only*, *Text Alongside Icons*, *Text Under Icons*).
   - Drag & Drop support for audio files, folders, and `.cue` sheets directly from Dolphin.
 - **100% Compatible with DeaDBeeF Encoder Presets:**
-  - Ships with **28 built-in presets** covering DeaDBeeF, Qmmp, and FFmpeg encoders (*FLAC*, *MP3 Lame / FFmpeg*, *Opus 96–320 kbps*, *Ogg Vorbis*, *Ogg FLAC*, *AAC*, *ALAC*, *WavPack*, *MusePack*, *TTA*, *AC3*, *AIFF*, *RIFF WAV*, *Standard MIDI (.mid from .mmf)*, *File Copy*).
+  - Ships with **36 built-in presets** covering DeaDBeeF, Qmmp, and FFmpeg encoders (*FLAC*, *MP3 Lame & FFmpeg (CBR 320/256/192/128 kbps & VBR V0/V2)*, *Opus 96–320 kbps*, *Ogg Vorbis*, *Ogg FLAC*, *AAC*, *ALAC*, *WavPack*, *MusePack*, *TTA*, *AC3*, *AIFF*, *RIFF WAV*, *Standard MIDI (.mid from .mmf)*, *File Copy*).
   - Reads and saves custom presets in `$XDG_DATA_HOME/qddbconv/presets/*.txt` (`~/.local/share/qddbconv/presets/*.txt` on Linux; `%LOCALAPPDATA%\qddbconv\presets\*.txt` or `<app_dir>\presets\*.txt` on Windows; customizable in *Settings -> Configure qddbconv...*), using the plain-text key-value format compatible with DeaDBeeF's converter presets.
 - **Broad Format & CUE Sheet Support:**
   - Built-in CUE sheet parser that splits single-file album images (`FLAC`, `APE`, `WV`, `WAV`, `TAK`, `TTA`) into individual tracks with accurate `INDEX 01` timestamps and per-track metadata.
@@ -44,14 +44,15 @@ Because **Qddbconv** uses `ffmpeg` / `ffprobe` for decoding plus a native `.cue`
   - Tracker: `.mod`, `.xm`, `.it`, `.s3m`, `.mptm`, `.stm`, `.med`, `.okt`, `.669`, `.far`, `.ult`, `.mtm`, `.amf`
   - Chiptune: `.spc` (SNES), `.vgm` / `.vgz` (Sega/Yamaha), `.nsf` / `.nsfe` (NES), `.gbs` (Game Boy), `.hes` (PC Engine), `.ay` (ZX Spectrum / Amstrad), `.sap` (Atari XL/XE), `.sid` (C64), `.kss` (MSX)
 
-*(Note: **Qddbconv** includes a built-in native C++ Yamaha SMAF `.mmf` parser and hybrid synthesis engine supporting MA-1/MA-2 HandyPhone Standard `0x00`, MA-3/MA-5 Mobile Standard Huffman `0x01`, and MA-3/MA-5 Mobile Standard Uncompressed `0x02`:
-- **Built-in Hybrid SMAF Engine (default)**: Renders 2-op and 4-op FM voices, custom `Mtsu`/`Mtsq`/`EXVO` SysEx FM patches, and direct hardware register notes (`43 02|03 90`) via the built-in C++ `YamahaMaFmSynth` (29 waveforms, 8 algorithms, and embedded GM 2-op/4-op FM banks), renders MA-3/MA-5 WaveTable tracks via `fluidsynth` or `timidity`, and mixes embedded 4-bit Yamaha ADPCM / PCM `Mwa`/`Awa` streams at 44.1 kHz stereo.
-- **Optional Native 32-bit DLL Loader (`qddbconv-smaf32`)**: Can optionally load 32-bit `M5_EmuSmw5.dll` and `M5_EmuHw.dll` directly (natively on Linux x86_64 without Wine, and on 64-bit Windows) when a DLL folder is configured in **Settings -> Configure qddbconv...**.
-- **MIDI Synthesizer & SoundFont Configuration**: By default (`Auto` mode), MIDI and WaveTable synthesis uses `fluidsynth` first and automatically falls back to `timidity` if `fluidsynth` or a `.sf2` SoundFont is unavailable; you can configure the preferred MIDI synthesizer, custom `fluidsynth` / `timidity` binary paths, custom `.sf2` SoundFont file, and SMAF engine mode in **Settings -> Configure qddbconv...**.)*
+*(Note: **Qddbconv** includes a built-in native C++ Yamaha SMAF `.mmf` parser and three selectable synthesis methods supporting MA-1/MA-2 HandyPhone Standard `0x00`, MA-3/MA-5 Mobile Standard Huffman `0x01`, and MA-3/MA-5 Mobile Standard Uncompressed `0x02` (configurable under **Settings -> Configure qddbconv... -> SMAF (.mmf) engine**):
+- **Built-in Hybrid (`builtin`, default fallback in `Auto` mode)**: Renders 2-op and 4-op FM voices, custom `Mtsu`/`Mtsq`/`EXVO` SysEx FM patches, and direct hardware register notes (`43 02|03 90`) via the built-in C++ `YamahaMaFmSynth` (29 waveforms, 8 algorithms, and embedded GM 2-op/4-op FM banks), renders MA-3/MA-5 WaveTable tracks via `fluidsynth` or `timidity`, and mixes embedded 4-bit Yamaha ADPCM / PCM `Mwa`/`Awa` streams at 44.1 kHz stereo.
+- **MIDI Synth + ADPCM (`midisynth`)**: Renders all score tracks via `fluidsynth` or `timidity` and mixes embedded 4-bit Yamaha ADPCM / PCM `Mwa`/`Awa` streams on top.
+- **Native 32-bit DLL Loader (`dll`, preferred in `Auto` mode when configured)**: Uses `qddbconv-smaf32` to load 32-bit `M5_EmuSmw5.dll` and `M5_EmuHw.dll` directly (natively on Linux x86_64 without Wine, and on 64-bit Windows) when a DLL folder is configured in **Settings -> Configure qddbconv...**.
+- **MIDI Synthesizer & SoundFont Configuration**: By default (`Auto` mode), MIDI and WaveTable synthesis uses `fluidsynth` first and automatically falls back to `timidity` if `fluidsynth` or a `.sf2` SoundFont is unavailable; you can configure the preferred MIDI synthesizer, custom `fluidsynth` / `timidity` binary paths, custom `.sf2` SoundFont file, and SMAF engine mode in **Settings -> Configure qddbconv...**. See **[INSTALL.md](INSTALL.md)** for instructions and download links for `FluidSynth`, `TiMidity++`, codecs, and `.sf2` SoundFonts (`FluidR3_GM`, `Roland SC-55 mk2`) on Windows and Linux.)*
 
 ### Output Formats (Convert TO)
 
-Out of the box via the **28 built-in presets** (plus any custom CLI encoder preset you add):
+Out of the box via the **36 built-in presets** (plus any custom CLI encoder preset you add):
 
 - **Lossless:**
   - `FLAC` (`.flac` — levels 5 & 8 via `flac`)
@@ -64,7 +65,7 @@ Out of the box via the **28 built-in presets** (plus any custom CLI encoder pres
   - `Apple AIFF` (`.aiff` — via `ffmpeg`)
   - `Standard MIDI` (`.mid` — native C++ conversion from `.mmf` Yamaha SMAF ringtones)
 - **Lossy:**
-  - `MP3` (`.mp3` — CBR 128, VBR 192 / `-V2`, CBR 320 via `lame` or `ffmpeg`)
+  - `MP3` (`.mp3` — CBR 320, 256, 192, 128 kbps and VBR `V0 (~245 Kbps)`, `V2 (~192 Kbps)` via both `lame` and `ffmpeg -c:a libmp3lame`)
   - `Opus` (`.opus` — 96, 128, 160, 192, 256, 320 kbps via `opusenc` or `ffmpeg`)
   - `Ogg Vorbis` (`.ogg` — VBR 160 / `-q 5`, 192 / `-q 6`, 256 / `-q 8`, 320 / `-q 9` via `oggenc`)
   - `AAC / M4A` (`.m4a` — 256 kbps via `ffmpeg` or VBR 192 via `faac`)
@@ -74,9 +75,13 @@ Out of the box via the **28 built-in presets** (plus any custom CLI encoder pres
 
 ---
 
-## Building
+## Installing Dependencies, SoundFonts & Building from Source
 
-See **[INSTALL.md](INSTALL.md)** for full dependency, build, `.deb`, and `.AppImage` instructions.
+See **[INSTALL.md](INSTALL.md)** for full instructions and download links:
+- **[Installing Dependencies on Linux (Debian/Ubuntu/Mint, Fedora, openSUSE, Arch, Void)](INSTALL.md#2-installing-dependencies-on-linux-distributions)**
+- **[Installing Codecs, FluidSynth, and TiMidity++ on Windows](INSTALL.md#3-installing-codecs-fluidsynth-and-timidity-on-windows)**
+- **[General MIDI SoundFonts (`.sf2`) — Trusted Download Sources (`FluidR3_GM`, `Roland SC-55 mk2`)](INSTALL.md#4-general-midi-soundfonts-sf2--trusted-download-sources)**
+- **[Building from Source & Generating `.deb`, `.AppImage`, and `win64.zip` Packages](INSTALL.md#5-building-and-installing-qddbconv-from-source)**
 
 ```bash
 # Option 1: CMake
